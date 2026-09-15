@@ -1,0 +1,17 @@
+# 构建产物（由 make 生成，不入库）
+/ipinfo
+/build/
+*.o
+
+# 本地验证/调试的临时输出
+*.out
+*.err
+*.log
+probe_*
+txq
+ni
+
+# 编辑器
+*.swp
+.vscode/
+.idea/
