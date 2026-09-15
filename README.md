@@ -198,8 +198,15 @@ ipinfo -j | jq .           # 结构化输出
 ```sh
 make            # 默认用 Termux 自带的 aarch64-linux-android-clang
 make check      # 冒烟测试
+make compare    # 与有权限的 adb shell 做集合级对照（需 adb 已授权）
+make test-proot # 进 proot 容器【内部】用 gcc(glibc) 重编并跑完整自测
 make install    # 装到 $PREFIX/bin
 ```
+
+`make test-proot`（即 `bash test_proot.sh`）先在 Termux 取基准，再把源码拷进容器用**容器自带
+gcc** 编译，然后断言：接口数/地址/路由必须与原生完全一致，而**邻居表必须为 0**
+（PRoot 不支持 `RTM_GETNEIGH`）；同时检查 `-v` 的 AF_UNIX 提示、stderr 是否为空、
+JSON 是否合法、退出码是否正确。
 
 也可以手动：
 

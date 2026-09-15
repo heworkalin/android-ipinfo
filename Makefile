@@ -30,6 +30,10 @@ compare: ipinfo
 	python3 cmp_routes.py
 	python3 cmp_neigh.py
 
+# 在 proot-distro 容器【内部】用 gcc/glibc 重编并跑完整自测
+test-proot: ipinfo
+	bash test_proot.sh
+
 install: ipinfo
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 755 ipinfo $(DESTDIR)$(BINDIR)/ipinfo
@@ -38,4 +42,4 @@ clean:
 	rm -f ipinfo *.o
 	rm -rf build
 
-.PHONY: all check compare install clean
+.PHONY: all check compare test-proot install clean

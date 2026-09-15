@@ -205,8 +205,15 @@ ipinfo -j | jq .           # structured output
 ```sh
 make            # uses Termux's bundled aarch64-linux-android-clang by default
 make check      # smoke test
+make compare    # set-level comparison against a privileged adb shell (needs adb)
+make test-proot # rebuild with the container's gcc (glibc) and run the full self-test inside proot
 make install    # install to $PREFIX/bin
 ```
+
+`make test-proot` (i.e. `bash test_proot.sh`) takes native baselines first, copies the source into
+the container, builds it with the **container's own gcc**, then asserts that interfaces/addresses/
+routes match the native run exactly while the **neighbor table must be 0** (PRoot does not support
+`RTM_GETNEIGH`). It also checks the `-v` AF_UNIX notice count, empty stderr, valid JSON and exit codes.
 
 Or manually:
 

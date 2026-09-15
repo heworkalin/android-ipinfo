@@ -57,7 +57,6 @@ $ adb shell ifconfig wlan0
 **正是这个基准立刻暴露了 PRoot 仿真数据是错的**（见 3.3）。
 
 ### 0.4 stdout / stderr 分开管道，输出顺序会骗人
-
 差点害我写错文档的一例：
 
 ```sh
@@ -71,6 +70,22 @@ timeout 60 proot-distro login ubuntu --user he -- /tmp/ipinfo -i wlan0   # 没�
 
 **教训**：诊断时把 stdout 与 stderr 分别重定向到文件再读（`> out 2> err`），
 不要把两个管道混在一起看顺序。重测后 13/13 次全部稳定为 `AF_UNIX` 替换，并不存在随机性。
+
+### 0.5 计数别用太宽的模式，否则“接口行”会被当成“邻居行”
+
+验证邻居表时我用 `grep -c '^  IPv'` 计数，在 proot 里得到 **14**，一度以为“PRoot 居然支持邻居表”。
+实际上这 14 条是**接口的地址行**——它们以 `  IPv4: 192.168.10.2/24 ...` 开头，也是两个空格 + `IPv`：
+
+| 行类型 | 样子 | 正确模式 |
+|---|---|---|
+| 接口地址 | `  IPv4: 192.168.10.2/24  mask …` | `'^  IPv[46]: '` |
+| 路由 | `  IPv4 table 1027  dev …` | `'^  IPv[46] table '` |
+| 邻居 | `  IPv4 dev wlan0  192.168.10.1 …` | `'^  IPv[46] dev '` |
+
+第二个错是一次性犯的：计数时给 `ipinfo` 加上了 `-R`（隐藏路由），于是路由数永远是 0。
+
+**教训**：计数给每种行配专属模式（`table` / `dev` / `:`），并且先看一眼原始输出再下结论；
+这就是后来把“容器内自测”写成脚本（`test_proot.sh`）的原因——机器断言比人眼盯 grep 可靠。
 
 ---
 
@@ -340,15 +355,24 @@ netlink IFLA_IFNAME → if_indextoname() → 原始 SIOCGIFNAME ioctl
 
 ### 3.6 PRoot 不支持 `RTM_GETNEIGH`
 
-同一个邻居表探针：
+在容器**内部**用容器自带 gcc 编一份 glibc 版跑（`bash test_proot.sh` / `make test-proot`），与原生逐项对比：
 
-```
-Termux 原生: NEIGHv4 => 12 entries, NEIGHv6 => 37 entries（共 49，与 adb 一致）
-proot      : NEIGHv4 => 0 entries,  NEIGHv6 => 0 entries
-```
+| 指标 | Termux 原生 | proot（glibc 版） | proot（bionic 版） |
+|---|---|---|---|
+| 接口数 / 地址行 | 10 / 14 | 10 / 14 | 10 / 14 |
+| 默认路由 | 5 | 5 | 5 |
+| 全路由 IPv4 / IPv6 | 14 / 52 | 14 / 52 | 14 / 52 |
+| 邻居默认(-n) / 全集(-N) | 10 / 49 | **0 / 0** | **0 / 0** |
 
-不是报错，而是静默返回空——这是 PRoot 合成 netlink 的又一个能力缺口。
-所以 `ipinfo -n` 在容器里会直接空掉（不报错、不崩），属预期行为。
+邻居表在容器里**静默返回空**（探针实测 NEIGHv4/v6 均为 0 条），这是 PRoot 合成 netlink 的又一个能力缺口：
+不是报错，而是没数据。`ipinfo -n` 会直接空掉这一节（不报错、不崩），属预期行为。
+
+相反的，路由与地址在两边**完全一致**，说明 PRoot 的合成回复在 ADDR/ROUTE 上够用，只有 GETLINK 的属性
+和 NEIGH 的整张表缺失。
+
+顺带一个产物：这份容器内自测现在是个脚本（`test_proot.sh`），它先在 Termux 取基准、
+再进容器用 gcc 重编、然后断言“除了邻居应当为 0，其余必须与原生相同”，顺便检查
+`-v` 的 AF_UNIX 提示次数、stderr 是否为空、JSON 是否合法、退出码是否正确。
 
 ---
 
