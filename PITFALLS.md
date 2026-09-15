@@ -438,28 +438,44 @@ netlink IFLA_IFNAME → if_indextoname() → 原始 SIOCGIFNAME ioctl
 
 见 0.2。任何“验证身份”的代码在 PRoot 下都可能被骗，必须在外面读。
 
-### 3.6 PRoot 不支持 `RTM_GETNEIGH`
+### 3.6 PRoot 不支持 `RTM_GETNEIGH`（带对照组的实测）
 
-在容器**内部**用容器自带 gcc 编一份 glibc 版跑（`bash test_proot.sh` / `make test-proot`），与原生逐项对比：
+单看“邻居表 0 条”无法区分三种可能：PRoot 不实现 / 探针写错 / 内核确实没有条目。
+所以仓库里带了一个带**对照组**的探针 [`tools/neigh_probe.c`](tools/neigh_probe.c)：
+同一进程、同一时刻把 `RTM_GETADDR` 也跑一遍。ADDR 有数据而 NEIGH 没有，就排除了后两者。
 
-| 指标 | Termux 原生 | proot（glibc 版） | proot（bionic 版） |
-|---|---|---|---|
-| 接口数 / 地址行 | 10 / 14 | 10 / 14 | 10 / 14 |
-| 默认路由 | 5 | 5 | 5 |
-| 全路由 IPv4 / IPv6 | 14 / 52 | 14 / 52 | 14 / 52 |
-| 邻居默认(-n) / 全集(-N) | 10 / 49 | **0 / 0** | **0 / 0** |
+```console
+$ make probe                                  # 在 Termux 原生跑
+  getuid()=10616  /proc 里的真 uid=10616  => 不在 PRoot 里
+  [对照组] RTM_GETADDR
+    ADDR   family=AF_UNSPEC SO_DOMAIN=16  DONE=yes entries=15 (报文 16 个)
+  [待测]   RTM_GETNEIGH
+    NEIGH  family=AF_UNSPEC SO_DOMAIN=16  DONE=yes entries=38 (报文 39 个)
+    NEIGH  family=AF_INET   SO_DOMAIN=16  DONE=yes entries=3  (报文 4 个)
+    NEIGH  family=AF_INET6  SO_DOMAIN=16  DONE=yes entries=35 (报文 36 个)
 
-邻居表在容器里**静默返回空**（探针实测 NEIGHv4/v6 均为 0 条），这是 PRoot 合成 netlink 的又一个能力缺口：
-不是报错，而是没数据。`ipinfo -n` 会有两种表现：
+$ cp tools/neigh_probe .../rootfs/tmp/ && proot-distro login ubuntu --user he -- /tmp/neigh_probe
+  getuid()=10617  /proc 里的真 uid=10616  => 在 PRoot 容器里
+  [对照组] RTM_GETADDR
+    ADDR   family=AF_UNSPEC SO_DOMAIN=1   DONE=yes entries=15 (报文 16 个)   ← 对照组有数据
+  [待测]   RTM_GETNEIGH
+    NEIGH  family=AF_UNSPEC SO_DOMAIN=1   DONE=yes entries=0  (报文 1 个)
+    NEIGH  family=AF_INET   SO_DOMAIN=1   DONE=yes entries=0  (报文 1 个)
+    NEIGH  family=AF_INET6  SO_DOMAIN=1   DONE=yes entries=0  (报文 1 个)
+```
 
-* 表中确实没有条目时：打印 `neighbors (...): (none)` 并说明原因（见 §1.12）
-* 本环境下（PRoot）永远是这个分支，所以容器里看不到 ARP 数据
+三点结论：
 
-> 注意：上表里“容器内 0 / 0”是**环境观察**，不是断言。
-> 自测脚本只断言“为空时必须有说明”，不写“必须为 0”（原因见 §0.6）。
+1. `SO_DOMAIN` 从 16 变成 1 —— 又是 PRoot 的 AF_UNIX 回退；
+2. 对照组 ADDR 在容器里也拿到 **15** 条，与原生完全一样 —— 探针与环境都正常；
+3. NEIGH 三种 family 都是 `DONE=yes entries=0`（**不是报错**）—— PRoot 的回退只实现了 ADDR，
+   没实现邻居表。
 
-相反的，路由与地址在两边**完全一致**，说明 PRoot 的合成回复在 ADDR/ROUTE 上够用，只有 GETLINK 的属性
-和 NEIGH 的整张表缺失。
+所以“容器里没有 ARP”是 PRoot 的能力缺口，与程序无关；在宿主机上跑即可拿到 ARP/网关 MAC。
+
+> 补充：早期我写过一个临时探针得到同样结论（NEIGHv4/v6 均 0 条），但那个文件在清理
+> 临时文件时被删了，导致结论无法复现。现在这个探针连同对照组一起进了仓库
+> （`make probe`），结论可随时重做。
 
 顺带一个产物：这份容器内自测现在是个脚本（`test_proot.sh`）：先在 Termux 取参考值、
 再进容器用 gcc 重编，然后断言**程序不变量**（退出码、stderr、JSON 结构、无占位符、
@@ -517,6 +533,9 @@ real=$(awk '/^Uid:/{print $2}' /proc/self/status) # 10616（真）
 ```sh
 make && make check
 
+# 0) 邻居表能力探针（带对照组，用来区分“环境不支持”与“探针写错”）
+make probe
+
 # 1) 原生环境：不得卡死（曾经因 nlmsg_pid 阻塞）
 timeout 10 ./ipinfo -v -s
 
@@ -536,7 +555,11 @@ grep -E '^(Uid|CapEff)' /proc/<pid>/status
 python3 cmp_routes.py     # 归一化 fe80:: ↔ fe80::/128、multicast ↔ ff00::/8
 
 # 6) 邻居表对照（默认视图必须完全相同；nud all 的差异只做信息输出）
-python3 cmp_neigh.py      # 默认视图 10 == 10
+python3 cmp_neigh.py      # 默认视图 10 == 10（随环境变化）
+
+# 6.5) 邻居表在容器内为什么是 0：跑探针，看对照组 ADDR 有没有数据
+#      make probe  # 原生
+#      拷进容器再跑  # 容器内：ADDR 有数据、NEIGH 全 0 → PRoot 的能力缺口
 
 # 7) 进 proot 容器重测（自动识别模式：宿主机做对比，容器内只查不变量）
 #    宿主机：make test-proot    容器内：bash test_proot.sh

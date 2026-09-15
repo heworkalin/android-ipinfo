@@ -34,12 +34,19 @@ compare: ipinfo
 test-proot: ipinfo
 	bash test_proot.sh
 
+# 邻居表能力探针（带 RTM_GETADDR 对照组，用来说清“0 条”到底是环境还是探针的问题）
+probe: tools/neigh_probe
+	./tools/neigh_probe
+
+tools/neigh_probe: tools/neigh_probe.c
+	$(CC) $(CFLAGS) -o $@ $<
+
 install: ipinfo
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 755 ipinfo $(DESTDIR)$(BINDIR)/ipinfo
 
 clean:
-	rm -f ipinfo *.o
+	rm -f ipinfo *.o tools/neigh_probe
 	rm -rf build
 
-.PHONY: all check compare test-proot install clean
+.PHONY: all check compare test-proot probe install clean
