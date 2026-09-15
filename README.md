@@ -2,6 +2,8 @@
 
 **在 Android 受限环境（无 root、无 adb 授权）下，把本机网络信息尽量挖出来。**
 
+> 英文版 / English: **[README.en.md](README.en.md)**
+
 一个纯 C、零第三方依赖的单文件命令行工具，跑在 Termux（`untrusted_app`，uid 1xxxx）里，
 用 **netlink + ioctl 的组合**绕过 Android 对普通应用的隐藏，拿到接口、IP、掩码、广播、网关、
 MTU、队列长度、接口状态和路由表。
