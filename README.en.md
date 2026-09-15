@@ -126,6 +126,7 @@ Against the baseline (`make compare`):
 | `nud all` | 49 | 49 | same count; on 26 NOARP entries `shell` can additionally see a 1-byte bogus lladdr `08` that an unprivileged app cannot (see PITFALLS) |
 
 `RTM_GETNEIGH` works in native Termux; **under proot PRoot does not support this request (returns 0 entries)**, so this section is empty inside the container.
+`-a` also issues this request once, to discover interfaces that carry no address (see [§7 Known limitations](#7-known-limitations)).
 
 ### Other interfaces and script-friendly output
 
@@ -149,7 +150,8 @@ kernel-direct ioctls**:
 1. **netlink** (`NETLINK_ROUTE`, unbound):
    * `RTM_GETADDR` → addresses + prefix lengths (v4/v6)
    * `RTM_GETROUTE` → default routes, including Android's per-network tables (1027, 1000000027, …)
-   * `RTM_GETNEIGH` → the neighbor / ARP table (only sent with `-n`; the only way to get peer MACs)
+   * `RTM_GETNEIGH` → the neighbor / ARP table (shown with `-n`/`-N`; also sent once with `-a`
+     for interface discovery; the only way to obtain peer MACs)
    * `RTM_GETLINK` → interface name / flags / mtu / operstate / MAC
      (refused in the native environment on this device; under proot PRoot fakes it as a success — see below)
 2. **ioctl** (`SIOCGIF*`, needs the real interface name):
@@ -175,7 +177,7 @@ usage: ipinfo [options]
   -4         IPv4 only
   -6         IPv6 only
   -u         only interfaces that are IFF_UP
-  -a         also show interfaces without any address
+  -a         also show interfaces without an address (discovers some from routes/neighbors)
   -m         show MAC (default)
   -M         hide MAC
   -r         show routes (default)
@@ -226,11 +228,15 @@ clean under ASan/UBSan.
 
 ## 7. Known limitations
 
-* **Interfaces with no address at all cannot be enumerated.** `ifconfig -a` lists **30**
-  interfaces (it can read `/proc/net/dev`), but `untrusted_app` gets `EACCES` on that file and
-  `if_nameindex()` (which goes through `RTM_GETLINK`) is refused as well, so `ipinfo -s` can only
-  list the **10** interfaces that carry an address. This is a **hard limitation**, not an
-  implementation defect.
+* **Not all interfaces can be enumerated.** `ifconfig -a` lists **30** interfaces (it can read
+  `/proc/net/dev`), but `untrusted_app` gets `EACCES` on that file and `if_nameindex()` (which goes
+  through `RTM_GETLINK`) is refused. What this tool can do:
+  * **10** interfaces with addresses, from `RTM_GETADDR` (the default view)
+  * with `-a`, **5** more address-less interfaces are recovered by resolving the ifindexes seen in
+    the **route and neighbor tables** (measured here: `gretap0`, `erspan0`, `wlan1`, `p2p0`,
+    `wifi-aware0`) — **15** in total
+  * the remaining **15** (`gre0`, `sit0`, `tunl0`, `ip_vti0`, `rmnet_data3…6`, …) are **referenced by
+    no route and no neighbor entry**, so there is no way to learn they exist — a genuine hard limit.
 * **No MAC address**: Android hides it from third-party apps; `SIOCGIFHWADDR` and netlink
   `IFLA_ADDRESS` both come back empty. `adb shell` cannot get it either.
 * **Some fields are emulated under PRoot**: `operstate`, `LOWER_UP` and friends come from PRoot's

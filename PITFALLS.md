@@ -157,8 +157,11 @@ fam=2 rtm_table=252  RTA_TABLE=1000000027 (0x3b9aca1b) oif=27 dst=192.168.10.0/2
 ### 1.7 `-l` 全路由模式
 
 只看默认路由（`rtm_dst_len != 0` 就 return）会漏掉直连/网段路由。支持 `-l` 后需要
-额外处理 `RTA_DST`（4 或 16 字节）、并放大 `MAXRT`（原 128 → 512，实测全表 80 条 /
-两族合计更多）。
+额外处理 `RTA_DST`（4 或 16 字节）、并放大 `MAXRT`（原 128 → 512）。
+本机实测全路由共 **66** 条（IPv4 14 + IPv6 52），默认路由 5 条。
+
+> 顺带一个坑：早期我写的是“全表 80 条”，那是用 `grep -c '^  IPv'` 数出来的——
+> 把 14 行接口地址也数进去了（14 + 66 = 80）。见 §0.5。
 
 ### 1.8 邻居表（ARP/NDP）：请求长度不能用 `rtgenmsg`
 
@@ -178,11 +181,30 @@ nl_dump(RTM_GETNEIGH, AF_UNSPEC, (int)sizeof(struct ndmsg), cb_neigh, NULL);
 它们既然在 `ndm_ifindex` / `RTA_OIF` 里现身，就可以拿去建接口条目再反查名字：
 
 ```c
-if (m->ndm_ifindex > 0) slot(m->ndm_ifindex, NULL);   /* cb_neigh / cb_route 里同理 */
+if (m->ndm_ifindex > 0) slot(m->ndm_ifindex, NULL);   /* cb_route 里用 rt.oif 同理 */
 ```
 
+这里有两个容易踩的点，我各踩了一次：
+
+1. **发现必须在“显示过滤”之前做。** 最初 `slot()` 写在早退语句后面：
+
+   ```c
+   if (!opt.neigh_all && (m->ndm_state & NUD_NOARP)) return;   /* 先早退了 */
+   if (m->ndm_ifindex > 0) slot(m->ndm_ifindex, NULL);          /* 永远执行不到 */
+   ```
+
+   而那些无地址接口的名字**恰好只出现在 NOARP 组播条目里**，于是 `-a` 一个都发现不了。
+   把 `slot()` 提到早退之前才修好。
+2. **`-a` 自己也要触发邻居 dump。** 否则“显示全部接口”这个诉求在原生环境下不可能实现——
+   邻居表是本机唯一会报出无地址接口 ifindex 的来源。现在条件是 `opt.neigh || opt.all`。
+
 配套改动：`resolve_names()` + `ioctl_fill()` 从“ROUTE 之前”移到**所有 dump 之后**，
-否则新发现的接口拿不到名字。效果：neighbors 里的 `dev if7` 变成 `dev erspan0` 这类真名。
+否则新发现的接口拿不到名字。
+
+效果（本机实测）：默认 **10** 个接口 → `-a` 后 **15** 个，多出来的是
+`gretap0`、`erspan0`、`wlan1`、`p2p0`、`wifi-aware0`，全是真名，不再有 `if%d` 占位符。
+剩下的 15 个（`gre0`/`sit0`/`tunl0`/`rmnet_data3…6` 等）没有任何路由/邻居条目引用，
+仍然无从得知（硬限制）。
 
 ### 1.10 邻居表：shell 与非特权应用看到的 lladdr 不同
 
@@ -263,8 +285,10 @@ ls /sys/class/net                 : Permission denied
 ```
 
 后果：`ifconfig -a`（shell）能列出 **30** 个接口，而 `RTM_GETADDR` 只能给出有地址的
-**10** 个。无地址的 `tunl0`/`gre0`/`rmnet_data3…` 在零授权环境下**枚举不到**，
-这是硬限制。
+**10** 个。不过还能报回 **5** 个（实测 `gretap0`/`erspan0`/`wlan1`/`p2p0`/`wifi-aware0`）——
+靠路由表/邻居表里的 ifindex 反推（见 §1.9），`-a` 时共 15 个。
+剩下 15 个（`tunl0`/`gre0`/`sit0`/`rmnet_data3…6` 等）没有被任何路由或邻居条目引用，
+零授权下无从得知，这是真正的硬限制。
 
 ---
 
@@ -413,12 +437,18 @@ grep -E '^(Uid|CapEff)' /proc/<pid>/status
 
 # 5) 路由集合级对照（归一化表示后差集应为空）
 #    IPv4: 14/14，IPv6: 49/49
-python3 cmp_routes.py     # 见仓库脚本：归一化 fe80:: ↔ fe80::/128、multicast ↔ ff00::/8
+python3 cmp_routes.py     # 归一化 fe80:: ↔ fe80::/128、multicast ↔ ff00::/8
 
-# 5) socket 真身（防 AF_NETLINK 被换）
-./ipinfo -v            # 出现 "actually domain 1" 就说明是 PRoot 仿真
+# 6) 邻居表对照（默认视图必须完全相同；nud all 的差异只做信息输出）
+python3 cmp_neigh.py      # 默认视图 10 == 10
 
-# 6) 内存检查
+# 7) 进 proot 容器【内部】重编重测：断言除邻居为 0 外与原生一致
+make test-proot
+
+# 8) socket 真身（防 AF_NETLINK 被换）
+./ipinfo -v               # 出现 "actually domain 1" 就说明是 PRoot 仿真
+
+# 9) 内存检查
 aarch64-linux-android-clang -O1 -g -fsanitize=address,undefined -o /tmp/ipinfo_asan ipinfo.c
 ./ipinfo_asan -l -j >/dev/null && python3 -c 'import json;json.load(open("/dev/stdin"))'
 ```

@@ -463,13 +463,15 @@ static void cb_neigh(struct nlmsghdr *h, void *ctx)
     int len = (int)h->nlmsg_len - (int)NLMSG_LENGTH(sizeof(*m));
 
     if (m->ndm_family != AF_INET && m->ndm_family != AF_INET6) return;
+
+    /* 接口发现必须在“显示过滤”之前做：只在 NOARP 组播条目里出现的接口
+     * （本机实测 if7/if8/if28/if29/if30）也必须能建出来。*/
+    if (m->ndm_ifindex > 0) slot(m->ndm_ifindex, NULL);
+
     /* NUD_NOARP 就是 224.x / ff02:: 这类组播缓存；
      * 默认按 `ip neigh` 的规则隐藏，-N 才显示。*/
     if (!opt.neigh_all && (m->ndm_state & NUD_NOARP)) return;
     if (neighs_n >= MAXNEIGH) return;
-
-    /* 同理：邻居表能指名道姓地告诉我们有哪些接口 */
-    if (m->ndm_ifindex > 0) slot(m->ndm_ifindex, NULL);
 
     struct neigh *e = &neighs[neighs_n];
     memset(e, 0, sizeof(*e));
@@ -1091,7 +1093,7 @@ static void usage(const char *argv0)
         "  -4         IPv4 only\n"
         "  -6         IPv6 only\n"
         "  -u         only interfaces that are IFF_UP\n"
-        "  -a         also show interfaces without any address\n"
+        "  -a         also show interfaces without an address (discovers some from routes/neighbors)\n"
         "  -m         show MAC (default)\n"
         "  -M         hide MAC\n"
         "  -r         show routes (default)\n"
@@ -1148,9 +1150,9 @@ int main(int argc, char **argv)
     if ((r = nl_dump(RTM_GETROUTE, AF_UNSPEC, (int)sizeof(struct rtgenmsg), cb_route, NULL)) < 0)
         vlog("RTM_GETROUTE failed: %s", strerror(-r));
 
-    /* 邻居表是 opt-in：不传 -n 就不去做这个 dump。
-     * 它同时是接口发现的补充来源（能报出没有地址的接口的 ifindex）。*/
-    if (opt.neigh &&
+    /* 邻居表是 opt-in（-n/-N）；另外 -a（想列全部接口）时也 dump 一次，
+     * 因为它是本机唯一能报出无地址接口 ifindex 的来源。*/
+    if ((opt.neigh || opt.all) &&
         (r = nl_dump(RTM_GETNEIGH, AF_UNSPEC, (int)sizeof(struct ndmsg), cb_neigh, NULL)) < 0)
         vlog("RTM_GETNEIGH failed: %s", strerror(-r));
 

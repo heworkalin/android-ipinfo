@@ -123,6 +123,7 @@ neighbors (NOARP/multicast hidden, use -N for all):
 | `nud all` 全集 | 49 | 49 | 条数一致；26 条 NOARP 条目上 shell 能多看到 1 字节伪 lladdr `08`，非特权应用看不到（见 PITFALLS）|
 
 `RTM_GETNEIGH` 在 Termux 原生可用；**proot 下 PRoot 不支持这个请求（返回 0 条）**，所以该节在容器里为空。
+`-a` 也会顺便发一次这个请求，用来发现那些没有地址的接口（见 [§7 已知限制](#7-已知限制)）。
 
 ### 其余接口与脚本化输出
 
@@ -145,7 +146,8 @@ $ ./ipinfo -j | jq .     # JSON，便于程序消费
 1. **netlink**（`NETLINK_ROUTE`，不 bind）：
    * `RTM_GETADDR` → 地址 + 前缀长度（v4/v6）
    * `RTM_GETROUTE` → 默认路由，含 Android 的 per-network 表（1027、1000000027…）
-   * `RTM_GETNEIGH` → 邻居表 / ARP（`-n` 才发；这是唯一能拿到对端 MAC 的途径）
+   * `RTM_GETNEIGH` → 邻居表 / ARP（`-n`/`-N` 显示，`-a` 也会发一次用于接口发现；
+     这是唯一能拿到对端 MAC 的途径）
    * `RTM_GETLINK` → 接口名 / flags / mtu / operstate / MAC
      （本机原生环境此请求被拒，proot 下会被 PRoot 伪造成"成功"，见下）
 2. **ioctl**（`SIOCGIF*`，需要真实接口名）：
@@ -168,7 +170,7 @@ usage: ipinfo [options]
   -4         IPv4 only
   -6         IPv6 only
   -u         only interfaces that are IFF_UP
-  -a         also show interfaces without any address
+  -a         also show interfaces without an address (discovers some from routes/neighbors)
   -m         show MAC (default)
   -M         hide MAC
   -r         show routes (default)
@@ -218,9 +220,13 @@ aarch64-linux-android-clang -O2 -Wall -Wextra -Wpedantic -std=c11 -o ipinfo ipin
 
 ## 7. 已知限制
 
-* **枚举不出"完全没有地址"的接口**。`ifconfig -a` 能列出 **30** 个接口（它读得到 `/proc/net/dev`），
-  而 `untrusted_app` 对该文件 `EACCES`，`if_nameindex()`（走 `RTM_GETLINK`）也被拒，
-  所以 `ipinfo -s` 只能列出有地址的 **10** 个接口。这是**硬限制**，不是实现缺陷。
+* **枚举不出全部接口**。`ifconfig -a` 能列出 **30** 个接口（它读得到 `/proc/net/dev`），
+  而 `untrusted_app` 对该文件 `EACCES`，`if_nameindex()`（走 `RTM_GETLINK`）也被拒。本工具能做的是：
+  * 从 `RTM_GETADDR` 拿到有地址的 **10** 个（默认视图）
+  * `-a` 时额外用**路由表 + 邻居表**里的 ifindex 反推，再多拿到 **5** 个无地址接口
+    （本机实测：`gretap0`、`erspan0`、`wlan1`、`p2p0`、`wifi-aware0`），共 **15** 个
+  * 剩下 **15** 个（`gre0`、`sit0`、`tunl0`、`ip_vti0`、`rmnet_data3…6` 等）**任何路由/邻居表
+    都不引用**，没有任何途径能知道它们存在——这部分是真正的硬限制。
 * **MAC 地址拿不到**：Android 对第三方应用隐藏，`SIOCGIFHWADDR` 与 netlink `IFLA_ADDRESS`
   都返回空；这一条 `adb shell` 同样拿不到。
 * **PRoot 下部分字段是仿真的**：`operstate`、`LOWER_UP` 等在 proot 来自 PRoot 的合成回复，
