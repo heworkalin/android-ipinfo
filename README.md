@@ -205,10 +205,19 @@ make test-proot # 进 proot 容器【内部】用 gcc(glibc) 重编并跑完整�
 make install    # 装到 $PREFIX/bin
 ```
 
-`make test-proot`（即 `bash test_proot.sh`）先在 Termux 取基准，再把源码拷进容器用**容器自带
-gcc** 编译，然后断言：接口数/地址/路由必须与原生完全一致，而**邻居表必须为 0**
-（PRoot 不支持 `RTM_GETNEIGH`）；同时检查 `-v` 的 AF_UNIX 提示、stderr 是否为空、
-JSON 是否合法、退出码是否正确。
+`make test-proot`（即 `bash test_proot.sh`）会**自动识别自己在哪**（用 `getuid()` 与
+`/proc/self/status` 里的真 uid 是否一致来判断，因为 PRoot 会伪造前者）：
+
+* **模式 A，在 Termux 宿主机跑**：先取原生基准，再把源码拷进容器、用**容器自带 gcc** 编译，
+  断言接口数/地址/默认路由/全路由必须与原生完全一致，而**邻居表必须为 0**
+  （PRoot 不支持 `RTM_GETNEIGH`）；同时检查 `-v` 的 AF_UNIX 提示次数、无 `if%d` 占位符、
+  stderr 为空、JSON 合法、退出码 0/1/2。
+* **模式 B，在容器内部跑**：容器里拿不到原生基准，于是跳过对比，只做容器侧的不变量断言
+  （邻居为 0、AF_UNIX 提示 3 次、无占位符、stderr 空、JSON/退出码）。
+
+为什么要分两种：`proot-distro` 拒绝在 proot 会话里再套一层（nested proot），
+而在容器内取的“原生基准”只是容器数据，拿来对比没有意义。
+所有基准值都是**运行时现取**的，不写死——设备网络状态变化（接口/路由增减）不会让测试假失败。
 
 也可以手动：
 

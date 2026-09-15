@@ -212,10 +212,22 @@ make test-proot # rebuild with the container's gcc (glibc) and run the full self
 make install    # install to $PREFIX/bin
 ```
 
-`make test-proot` (i.e. `bash test_proot.sh`) takes native baselines first, copies the source into
-the container, builds it with the **container's own gcc**, then asserts that interfaces/addresses/
-routes match the native run exactly while the **neighbor table must be 0** (PRoot does not support
-`RTM_GETNEIGH`). It also checks the `-v` AF_UNIX notice count, empty stderr, valid JSON and exit codes.
+`make test-proot` (i.e. `bash test_proot.sh`) **detects where it is running** (by comparing
+`getuid()` with the real uid in `/proc/self/status`, since PRoot fakes the former):
+
+* **Mode A, on the Termux host**: take native baselines, copy the source into the container and
+  build it with the **container's own gcc**, then assert that interfaces/addresses/default routes/
+  all routes match the native run exactly while the **neighbor table must be 0** (PRoot does not
+  support `RTM_GETNEIGH`). It also checks the `-v` AF_UNIX notice count, absence of `if%d`
+  placeholders, empty stderr, valid JSON and exit codes 0/1/2.
+* **Mode B, inside the container**: no native baseline is available there, so the comparison is
+  skipped and only container-side invariants are asserted (neighbors 0, 3 AF_UNIX notices, no
+  placeholders, empty stderr, JSON/exit codes).
+
+Why two modes: `proot-distro` refuses to run inside a proot session (nested proot), and a
+"baseline" taken inside the container is just container data — comparing against it means nothing.
+All baselines are taken **at runtime**, never hard-coded, so network state changes (interfaces or
+routes coming and going) cannot cause false failures.
 
 Or manually:
 

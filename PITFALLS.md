@@ -398,6 +398,35 @@ netlink IFLA_IFNAME → if_indextoname() → 原始 SIOCGIFNAME ioctl
 再进容器用 gcc 重编、然后断言“除了邻居应当为 0，其余必须与原生相同”，顺便检查
 `-v` 的 AF_UNIX 提示次数、stderr 是否为空、JSON 是否合法、退出码是否正确。
 
+### 3.7 proot-distro 拒绝嵌套：脚本必须知道自己在哪
+
+在容器内部直接嗂 `make test-proot` 时，第 1 步把容器内的数据当成了“原生基准”，
+然后第 3 步直接报：
+
+```
+Error: attempted to run proot-distro in a proot session. ...
+```
+
+两个问题：容器内的“基准”只是容器数据（对比无意义）；且 proot-distro 不允许嵌套。
+
+**如何知道自己在不在容器里**：PRoot 会伪造 `getuid()`，但 `/proc/self/status` 里的 `Uid:`
+是内核真值，两者不等就是在容器里：
+
+```sh
+fake=$(id -u)                                     # 10617（假）
+real=$(awk '/^Uid:/{print $2}' /proc/self/status) # 10616（真）
+[ "$fake" != "$real" ] && echo "在 proot 会话里"
+```
+
+`test_proot.sh` 据此分两种模式（同样的手法也曾用来窺探 `CapEff` 与 SELinux 上下文，见 §0.2）：
+
+* **模式 A（宿主机）**：取原生基准 + 进容器对比
+* **模式 B（容器内）**：不做对比，只断言容器侧不变量（邻居为 0、AF_UNIX 提示 3 次、
+  无 `if%d` 占位符、stderr 为空、JSON/退出码）
+
+另外，基准值全部**运行时现取**：设备网络状态是会变的（本项目开发过程中就从
+10 接口/14+52 路由变成了 9 接口/12+41），写死数字必然假失败。
+
 ---
 
 ## 4. 代码层面的坑
@@ -442,7 +471,8 @@ python3 cmp_routes.py     # 归一化 fe80:: ↔ fe80::/128、multicast ↔ ff00
 # 6) 邻居表对照（默认视图必须完全相同；nud all 的差异只做信息输出）
 python3 cmp_neigh.py      # 默认视图 10 == 10
 
-# 7) 进 proot 容器【内部】重编重测：断言除邻居为 0 外与原生一致
+# 7) 进 proot 容器重测（自动识别模式：宿主机做对比，容器内只查不变量）
+#    宿主机：make test-proot    容器内：bash test_proot.sh
 make test-proot
 
 # 8) socket 真身（防 AF_NETLINK 被换）
