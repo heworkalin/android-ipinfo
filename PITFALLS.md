@@ -328,3 +328,5 @@ python3 cmp_routes.py     # 见仓库脚本：归一化 fe80:: ↔ fe80::/128、
 aarch64-linux-android-clang -O1 -g -fsanitize=address,undefined -o /tmp/ipinfo_asan ipinfo.c
 ./ipinfo_asan -l -j >/dev/null && python3 -c 'import json;json.load(open("/dev/stdin"))'
 ```
+
+## 以上内容均为AI的总结，不是本人开发的，本人只是基于一个小的需求需要，所以说才开发的
