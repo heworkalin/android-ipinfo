@@ -226,19 +226,22 @@ make install    # install to $PREFIX/bin
 `make test-proot` (i.e. `bash test_proot.sh`) **detects where it is running** (by comparing
 `getuid()` with the real uid in `/proc/self/status`, since PRoot fakes the former):
 
-* **Mode A, on the Termux host**: take native baselines, copy the source into the container and
-  build it with the **container's own gcc**, then assert that interfaces/addresses/default routes/
-  all routes match the native run exactly while the **neighbor table must be 0** (PRoot does not
-  support `RTM_GETNEIGH`). It also checks the `-v` AF_UNIX notice count, absence of `if%d`
-  placeholders, empty stderr, valid JSON and exit codes 0/1/2.
-* **Mode B, inside the container**: no native baseline is available there, so the comparison is
-  skipped and only container-side invariants are asserted (neighbors 0, 3 AF_UNIX notices, no
-  placeholders, empty stderr, JSON/exit codes).
+* **Mode A, on the Termux host**: take host reference values → copy the source into the container →
+  build with the **container's own gcc** → run the assertions
+* **Mode B, inside the container**: run the same assertions against the current environment
 
-Why two modes: `proot-distro` refuses to run inside a proot session (nested proot), and a
-"baseline" taken inside the container is just container data — comparing against it means nothing.
-All baselines are taken **at runtime**, never hard-coded, so network state changes (interfaces or
-routes coming and going) cannot cause false failures.
+The script keeps two categories strictly apart:
+
+| | Content | Treatment |
+|---|---|---|
+| **Program invariants** | exit codes 0/1/2; empty stderr without `-v`; with `-v` stderr contains only `ipinfo: ` diagnostics; complete JSON structure; no `if<N>` placeholders; non-empty output; **an empty neighbor table must be explained, never silent** | **asserted** — a failure is a real bug |
+| **Environment differences** | neighbor count under proot, number of AF_UNIX notices, host-vs-container count differences | **reported only**, never judged |
+
+This split matters: PRoot lacking the neighbor table is a **capability gap of the current test
+environment**, not a property the program should have. Asserting "neighbors must be 0" would make
+the test fail the day PRoot gains that capability — punishing an improvement.
+All reference values are taken **at runtime**, never hard-coded, so network state changes cannot
+cause false failures.
 
 Or manually:
 
