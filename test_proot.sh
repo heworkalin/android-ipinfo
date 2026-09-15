@@ -100,10 +100,26 @@ cnt()  { grep -cE "$1" || true; }
 echo "-- 环境 --"
 echo "  getuid=$(id -u)  真 uid=$(awk '/^Uid:/{print $2}' /proc/self/status)  selinux=$(tr -d '\0' < /proc/self/attr/current 2>/dev/null)"
 
-echo "-- 编译（容器内 gcc / glibc）--"
-gcc -O2 -Wall -Wextra -Wpedantic -std=c11 -o ipinfo_glibc ipinfo.c || exit 1
-echo "  OK   $(ls -l ipinfo_glibc | awk '{print $5}') bytes, $(readelf -l ipinfo_glibc | grep -o 'ld-linux-aarch64.so.1' | head -1)"
-b=./ipinfo_glibc
+echo "-- 选择被测二进制：优先用容器自带 gcc 重编，没有 gcc 就用现有二进制 --"
+b=""
+if command -v gcc >/dev/null 2>&1; then
+    gcc -O2 -Wall -Wextra -Wpedantic -std=c11 -o ipinfo_glibc ipinfo.c || exit 1
+    echo "  OK   gcc 重编: $(ls -l ipinfo_glibc | awk '{print $5}') bytes, $(readelf -l ipinfo_glibc 2>/dev/null | grep -o 'ld-linux-aarch64.so.1' | head -1)"
+    b=./ipinfo_glibc
+elif [ -x ./ipinfo ]; then
+    echo "  OK   没有 gcc，改用已有的 ./ipinfo（可能是 Termux 编译拷入的 bionic 二进制）"
+    b=./ipinfo
+elif [ -x /tmp/ipinfo_test/ipinfo ]; then
+    b=/tmp/ipinfo_test/ipinfo
+    echo "  OK   没有 gcc，改用 $b"
+else
+    echo "  FAIL 既没有 gcc，也找不到可用的 ipinfo 二进制" >&2
+    echo "       两种做法任选一种：" >&2
+    echo "         1) 装编译器： apt update && apt install -y gcc" >&2
+    echo "         2) 在 Termux 侧 make 好后拷进来：" >&2
+    echo "            cp \$PREFIX/../home/android_ip/ipinfo <rootfs>/tmp/ipinfo_test/" >&2
+    exit 1
+fi
 
 # ======================= 程序不变量 =======================
 echo
@@ -132,7 +148,8 @@ n=$($b -l -N | grep -cE 'dev if[0-9]' || true)
 
 echo "-- JSON 结构与内容 --"
 if $b -j -l -N > out.json 2>/dev/null; then
-    if python3 - <<'PY'
+    if command -v python3 >/dev/null 2>&1; then
+        if python3 - <<'PY'
 import json, sys
 d = json.load(open('/tmp/ipinfo_selftest/out.json'))
 assert set(('interfaces', 'routes', 'neighbors')) <= set(d), d.keys()
@@ -144,7 +161,15 @@ for n in d['neighbors']:
     assert set(('family','dev','address','lladdr','state')) <= set(n), n.keys()
 print("  OK   json: ifaces=%d routes=%d neighbors=%d" % (len(d['interfaces']), len(d['routes']), len(d['neighbors'])))
 PY
-    then ok "JSON 合法且键完整"; else bad "JSON 结构不符"; fi
+        then ok "JSON 合法且键完整"; else bad "JSON 结构不符"; fi
+    else
+        # 容器里可能没有 python3：退化成粗校验（非空且以 { 开头）
+        if [ -s out.json ] && head -c 1 out.json | grep -q '{'; then
+            ok "JSON 已生成（无 python3，仅粗校验）"
+        else
+            bad "JSON 输出异常"
+        fi
+    fi
 else
     bad "JSON 输出失败"
 fi
