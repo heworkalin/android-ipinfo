@@ -105,6 +105,28 @@ they are **identical**:
 | IPv4 | 14 | 14 | 14 | empty |
 | IPv6 | 49 | 49 | 49 | empty |
 
+### Neighbor (ARP/NDP) table — including the **gateway's MAC**
+
+The local NIC MAC is hidden by Android, but peers' MACs are obtainable from the neighbor table:
+
+```console
+$ ./ipinfo -n -R -i wlan0 | sed -n '/^neighbors/,$p'
+neighbors (NOARP/multicast hidden, use -N for all):
+  IPv4 dev wlan0          192.168.10.1                               f4:bf:bb:bb:02:b9  REACHABLE
+  IPv4 dev wlan0          192.168.10.3                               a4:4b:d5:9a:c7:83  STALE
+  IPv4 dev wlan0          192.168.10.18                              -                  FAILED
+  IPv6 dev wlan0          fe80::7793:7ee:e499:703a%wlan0             a4:4b:d5:9a:c7:83  STALE
+```
+
+Against the baseline (`make compare`):
+
+| | adb `ip neigh show` | `ipinfo -n` | Result |
+|---|---|---|---|
+| default view (NOARP/multicast hidden) | 10 | 10 | **identical** |
+| `nud all` | 49 | 49 | same count; on 26 NOARP entries `shell` can additionally see a 1-byte bogus lladdr `08` that an unprivileged app cannot (see PITFALLS) |
+
+`RTM_GETNEIGH` works in native Termux; **under proot PRoot does not support this request (returns 0 entries)**, so this section is empty inside the container.
+
 ### Other interfaces and script-friendly output
 
 `ipinfo` can also list every interface and route in one go:
@@ -127,6 +149,7 @@ kernel-direct ioctls**:
 1. **netlink** (`NETLINK_ROUTE`, unbound):
    * `RTM_GETADDR` → addresses + prefix lengths (v4/v6)
    * `RTM_GETROUTE` → default routes, including Android's per-network tables (1027, 1000000027, …)
+   * `RTM_GETNEIGH` → the neighbor / ARP table (only sent with `-n`; the only way to get peer MACs)
    * `RTM_GETLINK` → interface name / flags / mtu / operstate / MAC
      (refused in the native environment on this device; under proot PRoot fakes it as a success — see below)
 2. **ioctl** (`SIOCGIF*`, needs the real interface name):
@@ -158,6 +181,8 @@ usage: ipinfo [options]
   -r         show routes (default)
   -R         hide routes
   -l         all routes (connected/prefix routes too), not just default
+  -n         show the ARP/NDP neighbor table (NOARP/multicast hidden)
+  -N         like -n, but include NOARP/multicast entries too
   -j         JSON output
   -s         compact one-line-per-interface output (no routes)
   -v         verbose: also print fallback/failure reasons to stderr
@@ -171,6 +196,7 @@ ipinfo                     # everything
 ipinfo -i wlan0            # only wlan0 (routes are filtered by interface too)
 ipinfo -4 -s               # one line per interface, IPv4 only
 ipinfo -l -6               # all IPv6 routes (including connected), not just default
+ipinfo -n                  # neighbor table (ARP/NDP); reveals the gateway MAC
 ipinfo -j | jq .           # structured output
 ```
 

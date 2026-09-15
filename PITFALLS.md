@@ -145,6 +145,64 @@ fam=2 rtm_table=252  RTA_TABLE=1000000027 (0x3b9aca1b) oif=27 dst=192.168.10.0/2
 额外处理 `RTA_DST`（4 或 16 字节）、并放大 `MAXRT`（原 128 → 512，实测全表 80 条 /
 两族合计更多）。
 
+### 1.8 邻居表（ARP/NDP）：请求长度不能用 `rtgenmsg`
+
+`RTM_GETNEIGH` 的请求体是 `struct ndmsg`，不是 `struct rtgenmsg`。因此 `nl_dump()` 后来
+加了一个 `payload_len` 参数：
+
+```c
+nl_dump(RTM_GETNEIGH, AF_UNSPEC, (int)sizeof(struct ndmsg), cb_neigh, NULL);
+```
+
+另外解析属性时内核头里没有现成的 `NEIGH_RTA()`（只有 `NDA_RTA()` 在某些头里），
+自己算偏移：`(char *)m + NLMSG_ALIGN(sizeof(struct ndmsg))`。
+
+### 1.9 邻居表/路由表可以反推接口（修掉 `if%d` 占位符）
+
+邻居表里会出现根本没有地址、`RTM_GETADDR` 报不出来的接口（本机实测 `if7/if8/if28/if29/if30`）。
+它们既然在 `ndm_ifindex` / `RTA_OIF` 里现身，就可以拿去建接口条目再反查名字：
+
+```c
+if (m->ndm_ifindex > 0) slot(m->ndm_ifindex, NULL);   /* cb_neigh / cb_route 里同理 */
+```
+
+配套改动：`resolve_names()` + `ioctl_fill()` 从“ROUTE 之前”移到**所有 dump 之后**，
+否则新发现的接口拿不到名字。效果：neighbors 里的 `dev if7` 变成 `dev erspan0` 这类真名。
+
+### 1.10 邻居表：shell 与非特权应用看到的 lladdr 不同
+
+`ipinfo -N` 与 `adb shell ip neigh show nud all` 条数相同（49 == 49），但默认视图才是
+严格对照：**`ipinfo -n` 与 `ip neigh show` 完全相同（10 == 10）**。
+
+全集视图里有 26 条差异，全部是 NOARP 条目上的 lladdr：shell 看得到 `08`（1 字节），
+untrusted_app 看不到。这是**调用者身份**差异（uid=2000 vs 10616），不是解析错误。
+`cmp_neigh.py` 把默认视图当硬指标，全集差异只做信息输出。
+
+### 1.11 不要被无关进程的 stderr 骗到
+
+调试期间输出里突然多出一行：
+
+```
+Cannot bind netlink socket: Permission denied
+```
+
+一度以为是自己程序在喷。排查结果：
+
+```console
+$ readelf -d ./ipinfo | grep NEEDED
+  Shared library: [libdl.so]
+  Shared library: [libc.so]
+$ strings ./ipinfo | grep -c "Cannot bind netlink"
+0
+$ grep -rl "Cannot bind netlink socket" /system/lib64/
+/system/lib64/libiprouteutil.so
+/system/lib64/libnetlink.so
+```
+
+这句话来自 **Android 平台自带的 iproute2 库**，是先前 `adb shell ip ...` 那个进程留下的输出，
+混进了终端流。`ipinfo` 连续跑 12 次 stderr 均为空。**教训**：先确认二进制有没有依赖/持有那个字符串，
+再怀疑自己。
+
 ---
 
 ## 2. Android 权限的坑
@@ -278,7 +336,19 @@ netlink IFLA_IFNAME → if_indextoname() → 原始 SIOCGIFNAME ioctl
 
 ### 3.5 PRoot 伪造 `getuid()` 与 `/proc/self/*`
 
-见 0.2。任何"验证身份"的代码在 PRoot 下都可能被骗，必须在外面读。
+见 0.2。任何“验证身份”的代码在 PRoot 下都可能被骗，必须在外面读。
+
+### 3.6 PRoot 不支持 `RTM_GETNEIGH`
+
+同一个邻居表探针：
+
+```
+Termux 原生: NEIGHv4 => 12 entries, NEIGHv6 => 37 entries（共 49，与 adb 一致）
+proot      : NEIGHv4 => 0 entries,  NEIGHv6 => 0 entries
+```
+
+不是报错，而是静默返回空——这是 PRoot 合成 netlink 的又一个能力缺口。
+所以 `ipinfo -n` 在容器里会直接空掉（不报错、不崩），属预期行为。
 
 ---
 

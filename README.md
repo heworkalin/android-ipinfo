@@ -102,6 +102,28 @@ default routes:
 | IPv4 | 14 | 14 | 14 | 空 |
 | IPv6 | 49 | 49 | 49 | 空 |
 
+### 还能看邻居表（ARP/NDP）—— 包括**网关的 MAC**
+
+本机网卡 MAC 被 Android 隐藏，但对端（网关）的 MAC 在邻居表里拿得到：
+
+```console
+$ ./ipinfo -n -R -i wlan0 | sed -n '/^neighbors/,$p'
+neighbors (NOARP/multicast hidden, use -N for all):
+  IPv4 dev wlan0          192.168.10.1                               f4:bf:bb:bb:02:b9  REACHABLE
+  IPv4 dev wlan0          192.168.10.3                               a4:4b:d5:9a:c7:83  STALE
+  IPv4 dev wlan0          192.168.10.18                              -                  FAILED
+  IPv6 dev wlan0          fe80::7793:7ee:e499:703a%wlan0             a4:4b:d5:9a:c7:83  STALE
+```
+
+与基准对照（`make compare`）：
+
+| | adb `ip neigh show` | `ipinfo -n` | 结果 |
+|---|---|---|---|
+| 默认视图（隐藏 NOARP/组播）| 10 | 10 | **完全相同** |
+| `nud all` 全集 | 49 | 49 | 条数一致；26 条 NOARP 条目上 shell 能多看到 1 字节伪 lladdr `08`，非特权应用看不到（见 PITFALLS）|
+
+`RTM_GETNEIGH` 在 Termux 原生可用；**proot 下 PRoot 不支持这个请求（返回 0 条）**，所以该节在容器里为空。
+
 ### 其余接口与脚本化输出
 
 `ipinfo` 还能一次列出全部接口和路由：
@@ -123,6 +145,7 @@ $ ./ipinfo -j | jq .     # JSON，便于程序消费
 1. **netlink**（`NETLINK_ROUTE`，不 bind）：
    * `RTM_GETADDR` → 地址 + 前缀长度（v4/v6）
    * `RTM_GETROUTE` → 默认路由，含 Android 的 per-network 表（1027、1000000027…）
+   * `RTM_GETNEIGH` → 邻居表 / ARP（`-n` 才发；这是唯一能拿到对端 MAC 的途径）
    * `RTM_GETLINK` → 接口名 / flags / mtu / operstate / MAC
      （本机原生环境此请求被拒，proot 下会被 PRoot 伪造成"成功"，见下）
 2. **ioctl**（`SIOCGIF*`，需要真实接口名）：
@@ -151,6 +174,8 @@ usage: ipinfo [options]
   -r         show routes (default)
   -R         hide routes
   -l         all routes (connected/prefix routes too), not just default
+  -n         show the ARP/NDP neighbor table (NOARP/multicast hidden)
+  -N         like -n, but include NOARP/multicast entries too
   -j         JSON output
   -s         compact one-line-per-interface output (no routes)
   -v         verbose: also print fallback/failure reasons to stderr
@@ -164,6 +189,7 @@ ipinfo                     # 完整信息
 ipinfo -i wlan0            # 只看 wlan0（路由也会按接口过滤）
 ipinfo -4 -s               # 每接口一行，只要 IPv4
 ipinfo -l -6               # 全部 IPv6 路由（含直连），不只是 default
+ipinfo -n                  # 邻居表（ARP/NDP），能看到网关 MAC
 ipinfo -j | jq .           # 结构化输出
 ```
 

@@ -52,10 +52,12 @@
 #include <linux/rtnetlink.h>
 #include <linux/if_link.h>
 #include <linux/if_addr.h>
+#include <linux/neighbour.h>
 
 #define MAXIF    64
 #define MAXV6    16
 #define MAXRT    512
+#define MAXNEIGH 256
 #define NL_BUF   (64 * 1024)
 
 /* 自带的 NLMSG_OK/NEXT：内核头里的宏会触发 -Wsign-compare 噪音 */
@@ -108,17 +110,31 @@ struct route {
     unsigned char gw[16];
 };
 
+struct neigh {
+    int  family;
+    int  oif;
+    int  state;                  /* NUD_* */
+    unsigned char dst[16];
+    int  has_lladdr;
+    int  lladdr_len;
+    unsigned char lladdr[32];
+};
+
 static struct iface ifs[MAXIF];
 static int  ifs_n = 0;
 
 static struct route rts[MAXRT];
 static int  rts_n = 0;
 
+static struct neigh neighs[MAXNEIGH];
+static int  neighs_n = 0;
+
 struct opts {
     const char *filter;
-    int only_up, all, w4, w6, wmac, routes, all_routes, json, summary, verbose, help;
+    int only_up, all, w4, w6, wmac, routes, all_routes, neigh, neigh_all,
+        json, summary, verbose, help;
 };
-static struct opts opt = { NULL, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0 };
+static struct opts opt = { NULL, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0 };
 
 /* ---------------- 基础工具 ---------------- */
 
@@ -174,7 +190,9 @@ static int name_known(const struct iface *p)
 typedef void (*nl_cb)(struct nlmsghdr *h, void *ctx);
 
 /* 返回 0 成功；-errno 失败 */
-static int nl_dump(int type, int family, nl_cb cb, void *ctx)
+/* payload_len 是请求消息体长度：不同请求内核要求的最小长度不同
+ * （RTM_GETNEIGH 需要 sizeof(struct ndmsg)，其余用 rtgenmsg 即可，均已实测）。*/
+static int nl_dump(int type, int family, int payload_len, nl_cb cb, void *ctx)
 {
     int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
     if (fd < 0) return -errno;
@@ -198,15 +216,17 @@ static int nl_dump(int type, int family, nl_cb cb, void *ctx)
 
     struct {
         struct nlmsghdr h;
-        struct rtgenmsg g;
+        char payload[64];
     } req;
     memset(&req, 0, sizeof(req));
+    if (payload_len < 1) payload_len = 1;
+    if (payload_len > (int)sizeof(req.payload)) payload_len = (int)sizeof(req.payload);
     unsigned seq = (unsigned)time(NULL) ^ (unsigned)type;
-    req.h.nlmsg_len    = NLMSG_LENGTH(sizeof(req.g));   /* 不含尾部对齐填充 */
+    req.h.nlmsg_len    = NLMSG_LENGTH(payload_len);   /* 不含尾部对齐填充 */
     req.h.nlmsg_type   = (unsigned short)type;
     req.h.nlmsg_flags  = NLM_F_REQUEST | NLM_F_DUMP;
     req.h.nlmsg_seq    = seq;
-    req.g.rtgen_family = (unsigned char)family;
+    *((unsigned char *)NLMSG_DATA(&req.h)) = (unsigned char)family;
 
     struct sockaddr_nl k = { .nl_family = AF_NETLINK };
     if (sendto(fd, &req, req.h.nlmsg_len, 0, (void *)&k, sizeof(k)) < 0) {
@@ -412,7 +432,71 @@ static void cb_route(struct nlmsghdr *h, void *ctx)
         }
     }
     rt.has_gw = (gw_len == 4 || gw_len == 16);
+    /* 路由里出现的 oif 往往是没地址、RTM_GETADDR 报不出来的接口，
+     * 建个条目，后面 resolve_names() 就能拿到真名 */
+    if (rt.oif > 0) slot(rt.oif, NULL);
     rts[rts_n++] = rt;
+}
+
+/* ---------------- RTM_GETNEIGH：ARP / NDP 邻居表 ---------------- */
+
+static const char *neigh_state_name(int s)
+{
+    switch (s) {
+    case NUD_INCOMPLETE: return "INCOMPLETE";
+    case NUD_REACHABLE:  return "REACHABLE";
+    case NUD_STALE:      return "STALE";
+    case NUD_DELAY:      return "DELAY";
+    case NUD_PROBE:      return "PROBE";
+    case NUD_FAILED:     return "FAILED";
+    case NUD_NOARP:      return "NOARP";
+    case NUD_PERMANENT:  return "PERMANENT";
+    default:             return "NONE";
+    }
+}
+
+static void cb_neigh(struct nlmsghdr *h, void *ctx)
+{
+    (void)ctx;
+    if (h->nlmsg_type != RTM_NEWNEIGH) return;
+    struct ndmsg *m = NLMSG_DATA(h);
+    int len = (int)h->nlmsg_len - (int)NLMSG_LENGTH(sizeof(*m));
+
+    if (m->ndm_family != AF_INET && m->ndm_family != AF_INET6) return;
+    /* NUD_NOARP 就是 224.x / ff02:: 这类组播缓存；
+     * 默认按 `ip neigh` 的规则隐藏，-N 才显示。*/
+    if (!opt.neigh_all && (m->ndm_state & NUD_NOARP)) return;
+    if (neighs_n >= MAXNEIGH) return;
+
+    /* 同理：邻居表能指名道姓地告诉我们有哪些接口 */
+    if (m->ndm_ifindex > 0) slot(m->ndm_ifindex, NULL);
+
+    struct neigh *e = &neighs[neighs_n];
+    memset(e, 0, sizeof(*e));
+    e->family = m->ndm_family;
+    e->oif    = m->ndm_ifindex;
+    e->state  = m->ndm_state;
+
+    for (struct rtattr *r = (struct rtattr *)((char *)m + NLMSG_ALIGN(sizeof(*m)));
+         RTA_OK(r, len); r = RTA_NEXT(r, len)) {
+        switch (r->rta_type) {
+        case NDA_DST:
+            if (RTA_PAYLOAD(r) == 4 || RTA_PAYLOAD(r) == 16)
+                memcpy(e->dst, RTA_DATA(r), RTA_PAYLOAD(r));
+            break;
+        case NDA_LLADDR:
+            e->has_lladdr = 1;
+            e->lladdr_len = (int)RTA_PAYLOAD(r);
+            if (e->lladdr_len > (int)sizeof(e->lladdr))
+                e->lladdr_len = (int)sizeof(e->lladdr);
+            if (e->lladdr_len > 0)
+                memcpy(e->lladdr, RTA_DATA(r), (size_t)e->lladdr_len);
+            break;
+        default:
+            break;
+        }
+    }
+    neighs_n++;
 }
 
 /* ---------------- 名字兜底：netlink 不可用时用 ioctl 反查 ---------------- */
@@ -693,6 +777,29 @@ static int route_selected(const struct route *r)
     return 1;
 }
 
+/* 邻居表同样尊重 -4/-6/-i；-n 才启用 */
+static int neigh_selected(const struct neigh *e)
+{
+    if (!opt.neigh) return 0;
+    if (e->family == AF_INET  && !opt.w4) return 0;
+    if (e->family == AF_INET6 && !opt.w6) return 0;
+    if (opt.filter) {
+        struct iface *p = by_index(e->oif);
+        int hit = (p && strcmp(p->name, opt.filter) == 0) ||
+                  (is_number(opt.filter) && atoi(opt.filter) == e->oif);
+        if (!hit) return 0;
+    }
+    return 1;
+}
+
+static int cmp_neigh(const void *a, const void *b)
+{
+    const struct neigh *x = a, *y = b;
+    if (x->family != y->family) return x->family - y->family;
+    if (x->oif != y->oif) return x->oif - y->oif;
+    return memcmp(x->dst, y->dst, x->family == AF_INET ? 4u : 16u);
+}
+
 /* ---------------- 输出：文本 ---------------- */
 
 static void print_one(const struct iface *p)
@@ -779,6 +886,54 @@ static void print_routes(void)
         }
         printf("  %-4s table %-13s dev %-14s %-32s gw %-45s metric %d\n",
                r->family == AF_INET ? "IPv4" : "IPv6", tb, dev, dst, gw, r->metric);
+    }
+    printf("\n");
+}
+
+static void print_neighs(void)
+{
+    int any = 0;
+    for (int i = 0; i < neighs_n; i++) if (neigh_selected(&neighs[i])) any = 1;
+    if (!any) return;
+
+    printf("neighbors (%s):\n",
+           opt.neigh_all ? "nud all" : "NOARP/multicast hidden, use -N for all");
+    for (int i = 0; i < neighs_n; i++) {
+        struct neigh *e = &neighs[i];
+        if (!neigh_selected(e)) continue;
+
+        char dst[INET6_ADDRSTRLEN + IFNAMSIZ], mac[64] = "-";
+        char devbuf[IFNAMSIZ];
+        struct iface *p = by_index(e->oif);
+        const char *dev;
+        if (p) {
+            dev = p->name;
+        } else {
+            snprintf(devbuf, sizeof(devbuf), "if%d", e->oif);
+            dev = devbuf;
+        }
+
+        if (e->family == AF_INET6) {
+            struct in6_addr tmp;
+            memcpy(&tmp, e->dst, sizeof(tmp));
+            inet_ntop(AF_INET6, &tmp, dst, sizeof(dst));
+            if (IN6_IS_ADDR_LINKLOCAL(&tmp)) {   /* 链路本地要带作用域 */
+                size_t l = strlen(dst);
+                snprintf(dst + l, sizeof(dst) - l, "%%%s", dev);
+            }
+        } else {
+            inet_ntop(AF_INET, e->dst, dst, sizeof(dst));
+        }
+
+        if (e->has_lladdr && e->lladdr_len > 0) {
+            mac[0] = 0;
+            for (int k = 0; k < e->lladdr_len; k++)
+                snprintf(mac + strlen(mac), sizeof(mac) - strlen(mac), "%02x%s",
+                         e->lladdr[k], k + 1 < e->lladdr_len ? ":" : "");
+        }
+        printf("  %-4s dev %-14s %-42s %-18s %s\n",
+               e->family == AF_INET ? "IPv4" : "IPv6", dev, dst, mac,
+               neigh_state_name(e->state));
     }
     printf("\n");
 }
@@ -898,6 +1053,31 @@ static void print_json(void)
         printf(", \"metric\": %d}", r->metric);
         first = 0;
     }
+    printf("\n  ],\n  \"neighbors\": [");
+    first = 1;
+    for (int i = 0; i < neighs_n; i++) {
+        struct neigh *e = &neighs[i];
+        if (!neigh_selected(e)) continue;
+        char dst[INET6_ADDRSTRLEN];
+        char mac[64] = {0};
+        struct iface *p = by_index(e->oif);
+        inet_ntop(e->family, e->dst, dst, sizeof(dst));
+        if (e->has_lladdr && e->lladdr_len > 0)
+            for (int k = 0; k < e->lladdr_len; k++)
+                snprintf(mac + strlen(mac), sizeof(mac) - strlen(mac), "%02x%s",
+                         e->lladdr[k], k + 1 < e->lladdr_len ? ":" : "");
+        printf("%s\n    {\"family\": \"%s\", \"dev\": ",
+               first ? "" : ",", e->family == AF_INET ? "ipv4" : "ipv6");
+        json_string(p ? p->name : "?");
+        printf(", \"address\": ");
+        json_string(dst);
+        printf(", \"lladdr\": ");
+        if (mac[0]) json_string(mac); else printf("null");
+        printf(", \"state\": ");
+        json_string(neigh_state_name(e->state));
+        putchar('}');
+        first = 0;
+    }
     printf("\n  ]\n}\n");
 }
 
@@ -917,6 +1097,8 @@ static void usage(const char *argv0)
         "  -r         show routes (default)\n"
         "  -R         hide routes\n"
         "  -l         all routes (connected/prefix routes too), not just default\n"
+        "  -n         show the ARP/NDP neighbor table (NOARP/multicast hidden)\n"
+        "  -N         like -n, but include NOARP/multicast entries too\n"
         "  -j         JSON output\n"
         "  -s         compact one-line-per-interface output (no routes)\n"
         "  -v         verbose: also print fallback/failure reasons to stderr\n"
@@ -929,7 +1111,7 @@ static void usage(const char *argv0)
 int main(int argc, char **argv)
 {
     int optc;
-    while ((optc = getopt(argc, argv, "i:46uamMrRljsvh")) != -1) {
+    while ((optc = getopt(argc, argv, "i:46uamMrRlnNjsvh")) != -1) {
         switch (optc) {
         case 'i': opt.filter  = optarg; break;
         case '4': opt.w6      = 0;      break;
@@ -941,6 +1123,8 @@ int main(int argc, char **argv)
         case 'r': opt.routes  = 1;      break;
         case 'R': opt.routes  = 0;      break;
         case 'l': opt.all_routes = 1;   break;
+        case 'n': opt.neigh = 1;        break;
+        case 'N': opt.neigh = 1; opt.neigh_all = 1; break;
         case 'j': opt.json    = 1;      break;
         case 's': opt.summary = 1;      break;
         case 'v': opt.verbose = 1;      break;
@@ -956,20 +1140,27 @@ int main(int argc, char **argv)
     /* 顺序很重要：先 LINK 建表（名字），再 ADDR 填地址；
        之后才做名字/ioctl 兜底，最后才是 ROUTE。 */
     int r;
-    if ((r = nl_dump(RTM_GETLINK, AF_UNSPEC, cb_link, NULL)) < 0)
+    if ((r = nl_dump(RTM_GETLINK, AF_UNSPEC, (int)sizeof(struct rtgenmsg), cb_link, NULL)) < 0)
         vlog("RTM_GETLINK failed: %s (falling back to if_indextoname/ioctl)",
              strerror(-r));
-    if ((r = nl_dump(RTM_GETADDR, AF_UNSPEC, cb_addr, NULL)) < 0)
+    if ((r = nl_dump(RTM_GETADDR, AF_UNSPEC, (int)sizeof(struct rtgenmsg), cb_addr, NULL)) < 0)
         vlog("RTM_GETADDR failed: %s", strerror(-r));
+    if ((r = nl_dump(RTM_GETROUTE, AF_UNSPEC, (int)sizeof(struct rtgenmsg), cb_route, NULL)) < 0)
+        vlog("RTM_GETROUTE failed: %s", strerror(-r));
 
+    /* 邻居表是 opt-in：不传 -n 就不去做这个 dump。
+     * 它同时是接口发现的补充来源（能报出没有地址的接口的 ifindex）。*/
+    if (opt.neigh &&
+        (r = nl_dump(RTM_GETNEIGH, AF_UNSPEC, (int)sizeof(struct ndmsg), cb_neigh, NULL)) < 0)
+        vlog("RTM_GETNEIGH failed: %s", strerror(-r));
+
+    /* 所有 dump 跑完（表已建齐）才做名字/ioctl 兜底 */
     resolve_names();
     ioctl_fill();
 
-    if ((r = nl_dump(RTM_GETROUTE, AF_UNSPEC, cb_route, NULL)) < 0)
-        vlog("RTM_GETROUTE failed: %s", strerror(-r));
-
     qsort(ifs, (size_t)ifs_n, sizeof(ifs[0]), cmp_iface);
     qsort(rts, (size_t)rts_n, sizeof(rts[0]), cmp_route);
+    qsort(neighs, (size_t)neighs_n, sizeof(neighs[0]), cmp_neigh);
 
     if (opt.json) {
         print_json();
@@ -989,5 +1180,6 @@ int main(int argc, char **argv)
         return 2;
     }
     if (!opt.summary) print_routes();
+    if (!opt.summary) print_neighs();
     return 0;
 }

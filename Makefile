@@ -28,6 +28,7 @@ check: ipinfo
 # 与有权限的 adb shell 做路由集合级对照（需 adb 已授权）
 compare: ipinfo
 	python3 cmp_routes.py
+	python3 cmp_neigh.py
 
 install: ipinfo
 	install -d $(DESTDIR)$(BINDIR)
