@@ -330,3 +330,11 @@ aarch64-linux-android-clang -O1 -g -fsanitize=address,undefined -o /tmp/ipinfo_a
 ```
 
 ## 以上内容均为AI的总结，不是本人开发的，本人只是基于一个小的需求需要，所以说才开发的
+
+## Note (English)
+
+This file is intentionally Chinese-only — no hand-written translation is planned. If you need it in
+another language, just throw it at an AI (or any other translation tool).
+
+All values quoted in this file are real measurements taken on the device and can be reproduced;
+§5 (复核清单) is a step-by-step verification checklist.
