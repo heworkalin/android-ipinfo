@@ -6,6 +6,15 @@
 用 **netlink + ioctl 的组合**绕过 Android 对普通应用的隐藏，拿到接口、IP、掩码、广播、网关、
 MTU、队列长度、接口状态和路由表。
 
+> **声明 / Disclosure**
+>
+> 本仓库的代码与文档由 AI 编程助手生成与整理（[pi.dev](https://pi.dev)，模型 `deepseek-v4-flash`），
+> 作者只提出需求。文中所有“实测”数据均来自真机命令输出，可自行复现验证。
+>
+> Code and docs in this repo were produced with an AI coding agent
+> ([pi.dev](https://pi.dev), model `deepseek-v4-flash`); the author only provided the requirement.
+> Every "measured" figure is real command output from the device and can be reproduced.
+
 ---
 
 ## 1. 这个工具解决什么问题
@@ -130,20 +139,20 @@ $ ./ipinfo -j | jq .     # JSON，便于程序消费
 
 ```
 usage: ipinfo [options]
-  -i IFACE   只看指定接口（名字或 ifindex）
-  -4         只看 IPv4
-  -6         只看 IPv6
-  -u         只看 IFF_UP 的接口
-  -a         连没有地址的接口一起显示
-  -m         显示 MAC（默认）
-  -M         不显示 MAC
-  -r         显示默认路由（默认）
-  -R         不显示路由
-  -l         显示全部路由（含直连/网段路由），而非仅默认路由
-  -j         JSON 输出
-  -s         单行紧凑输出（每接口一行，不含路由）
-  -v         打印降级/失败原因到 stderr（含 PRoot 伪装提示）
-  -h         显示帮助
+  -i IFACE   only this interface (name or ifindex)
+  -4         IPv4 only
+  -6         IPv6 only
+  -u         only interfaces that are IFF_UP
+  -a         also show interfaces without any address
+  -m         show MAC (default)
+  -M         hide MAC
+  -r         show routes (default)
+  -R         hide routes
+  -l         all routes (connected/prefix routes too), not just default
+  -j         JSON output
+  -s         compact one-line-per-interface output (no routes)
+  -v         verbose: also print fallback/failure reasons to stderr
+  -h         show this help
 ```
 
 退出码：`0` 正常，`1` 参数错误，`2` 没有匹配的接口。

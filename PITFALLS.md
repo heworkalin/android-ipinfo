@@ -220,7 +220,7 @@ sysenter end:   socket(0x1,  0x80002, 0x0)      # 被改成 AF_UNIX, SOCK_DGRAM
 现在 `ipinfo -v` 会主动提示这一点：
 
 ```
-ipinfo: socket(AF_NETLINK) 实际是 domain 1（PRoot AF_UNIX 回退？），netlink 回复可能是仿真数据
+ipinfo: socket(AF_NETLINK) is actually domain 1 (PRoot AF_UNIX fallback?) - netlink replies may be emulated
 ```
 
 ### 3.2 PRoot 的"netlink 回复"是合成的，不是内核原样转发
@@ -322,7 +322,7 @@ grep -E '^(Uid|CapEff)' /proc/<pid>/status
 python3 cmp_routes.py     # 见仓库脚本：归一化 fe80:: ↔ fe80::/128、multicast ↔ ff00::/8
 
 # 5) socket 真身（防 AF_NETLINK 被换）
-./ipinfo -v            # 出现"实际是 domain 1"就说明是 PRoot 仿真
+./ipinfo -v            # 出现 "actually domain 1" 就说明是 PRoot 仿真
 
 # 6) 内存检查
 aarch64-linux-android-clang -O1 -g -fsanitize=address,undefined -o /tmp/ipinfo_asan ipinfo.c

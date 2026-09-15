@@ -189,8 +189,8 @@ static int nl_dump(int type, int family, nl_cb cb, void *ctx)
         socklen_t dl = sizeof(dom);
         if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &dom, &dl) == 0 &&
             dom != AF_NETLINK)
-            vlog("socket(AF_NETLINK) 实际是 domain %d（PRoot AF_UNIX 回退？）"
-                 "，netlink 回复可能是仿真数据", dom);
+            vlog("socket(AF_NETLINK) is actually domain %d "
+                 "(PRoot AF_UNIX fallback?) - netlink replies may be emulated", dom);
     }
 
     int rcvbuf = 1 << 20;   /* 大路由表时降低被截断的概率 */
@@ -907,20 +907,20 @@ static void usage(const char *argv0)
 {
     printf(
         "usage: %s [options]\n"
-        "  -i IFACE   只看指定接口（名字或 ifindex）\n"
-        "  -4         只看 IPv4\n"
-        "  -6         只看 IPv6\n"
-        "  -u         只看 IFF_UP 的接口\n"
-        "  -a         连没有地址的接口一起显示\n"
-        "  -m         显示 MAC（默认）\n"
-        "  -M         不显示 MAC\n"
-        "  -r         显示默认路由（默认）\n"
-        "  -R         不显示路由\n"
-        "  -l         显示全部路由（含直连/网段路由），而非仅默认路由\n"
-        "  -j         JSON 输出\n"
-        "  -s         单行紧凑输出（每接口一行，不含路由）\n"
-        "  -v         打印降级/失败原因到 stderr\n"
-        "  -h         显示本帮助\n",
+        "  -i IFACE   only this interface (name or ifindex)\n"
+        "  -4         IPv4 only\n"
+        "  -6         IPv6 only\n"
+        "  -u         only interfaces that are IFF_UP\n"
+        "  -a         also show interfaces without any address\n"
+        "  -m         show MAC (default)\n"
+        "  -M         hide MAC\n"
+        "  -r         show routes (default)\n"
+        "  -R         hide routes\n"
+        "  -l         all routes (connected/prefix routes too), not just default\n"
+        "  -j         JSON output\n"
+        "  -s         compact one-line-per-interface output (no routes)\n"
+        "  -v         verbose: also print fallback/failure reasons to stderr\n"
+        "  -h         show this help\n",
         argv0);
 }
 
