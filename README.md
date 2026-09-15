@@ -202,3 +202,7 @@ aarch64-linux-android-clang -O2 -Wall -Wextra -Wpedantic -std=c11 -o ipinfo ipin
 
 开发过程中的实测记录、踩坑与验证方法整理在 [`PITFALLS.md`](PITFALLS.md)。
 本文档中所有"实测""实测环境"的数据都来自真机命令输出，可复现。
+
+## 9. 许可证
+
+[MIT](LICENSE) © 2026 heworkalin

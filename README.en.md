@@ -214,3 +214,7 @@ This project was **developed with the help of an AI coding agent**:
 The measurement log, pitfalls and verification methods are collected in
 [`PITFALLS.md`](PITFALLS.md) (Chinese). Every "measured" figure in this document comes from real
 device command output and is reproducible.
+
+## 9. License
+
+[MIT](LICENSE) © 2026 heworkalin
