@@ -18,9 +18,17 @@
  *     所以所谓“PRoot 下 netlink 可用”是假象：回复由 PRoot 合成，实测会丢掉
  *     IFA_FLAGS/IFA_CACHEINFO/IFA_BROADCAST、ifa_flags 恒为 0x80、消息顺序反转，
  *     并会把 ifindex 27 的 txqlen 报成 1000（adb ifconfig / ioctl 均为 3000）。
- *     但地址/前缀/路由表与真内核结果一致，仍可用；mtu/txqlen 一律改用 ioctl 取真值。
+ *     另外：用 AF_UNSPEC 发 ROUTE dump 时 PRoot **只回 IPv4**（IPv6 整族丢失，
+ *     实测容器内 156 而真值 220），所以本程序改成按 family 各发一次。
+ *     地址与显式 family 的路由与真内核一致；但 PRoot 本身也会少报部分 IPv4 路由。
  *     if_indextoname / SIOCGIFNAME -> EACCES（PRoot 拦掉）
  *     netlink 的 IFLA_ADDRESS      -> 长度 0（Android 对第三方应用隐藏 MAC）
+ *
+ *   TMOE（tmoe proot ubuntu noble arm64，另一套 proot 方案）:
+ *     与 PRoot-Distro 行为一致（同一份 Termux proot）：AF_NETLINK 同样被换成
+ *     AF_UNIX、邻居表同样 0 条、路由同样缺一部分；fake root 为 uid=0。
+ *     额外差异：TMOE 容器里没有 /linkerconfig，所以跑 bionic 二进制时
+ *     Android 的 linker 会往 stderr 打一行 ld.config.txt 警告（与本程序无关）。
  *
  * 三个环境的真实 uid / SELinux 上下文 / capabilities 完全相同
  * （u:r:untrusted_app_27:s0:c104,c258,c512,c768, CapEff 0），
@@ -1167,13 +1175,21 @@ int main(int argc, char **argv)
     if ((r = nl_dump(RTM_GETLINK, AF_UNSPEC, (int)sizeof(struct rtgenmsg), cb_link, NULL)) < 0)
         vlog("RTM_GETLINK failed: %s (falling back to if_indextoname/ioctl)",
              strerror(-r));
-    if ((r = nl_dump(RTM_GETADDR, AF_UNSPEC, (int)sizeof(struct rtgenmsg), cb_addr, NULL)) < 0)
-        vlog("RTM_GETADDR failed: %s", strerror(-r));
-    if ((r = nl_dump(RTM_GETROUTE, AF_UNSPEC, (int)sizeof(struct rtgenmsg), cb_route, NULL)) < 0)
-        vlog("RTM_GETROUTE failed: %s", strerror(-r));
 
-    /* 邻居表是 opt-in（-n/-N）；另外 -a（想列全部接口）时也 dump 一次，
-     * 因为它是本机唯一能报出无地址接口 ifindex 的来源。*/
+    /* ADDR / ROUTE 按 family 各发一次，而不是用 AF_UNSPEC 发一次。
+     * 原因：实测 PRoot 的合成 netlink 对 AF_UNSPEC 的 ROUTE 请求**只返回 IPv4**，
+     * IPv6 整族丢失（容器内 156 条，真值 220 = 175+45）；显式指定 family 才完整。
+     * 两族都请求，保持 -a/-i 的接口发现语义不变（显示侧的 -4/-6 过滤照旧）。*/
+    if ((r = nl_dump(RTM_GETADDR, AF_INET, (int)sizeof(struct rtgenmsg), cb_addr, NULL)) < 0)
+        vlog("RTM_GETADDR(AF_INET) failed: %s", strerror(-r));
+    if ((r = nl_dump(RTM_GETADDR, AF_INET6, (int)sizeof(struct rtgenmsg), cb_addr, NULL)) < 0)
+        vlog("RTM_GETADDR(AF_INET6) failed: %s", strerror(-r));
+    if ((r = nl_dump(RTM_GETROUTE, AF_INET, (int)sizeof(struct rtgenmsg), cb_route, NULL)) < 0)
+        vlog("RTM_GETROUTE(AF_INET) failed: %s", strerror(-r));
+    if ((r = nl_dump(RTM_GETROUTE, AF_INET6, (int)sizeof(struct rtgenmsg), cb_route, NULL)) < 0)
+        vlog("RTM_GETROUTE(AF_INET6) failed: %s", strerror(-r));
+
+    /* NEIGH 仍用 AF_UNSPEC：PRoot 下不管哪种 family 都是 0 条，拆开没意义 */
     if ((opt.neigh || opt.all) &&
         (r = nl_dump(RTM_GETNEIGH, AF_UNSPEC, (int)sizeof(struct ndmsg), cb_neigh, NULL)) < 0)
         vlog("RTM_GETNEIGH failed: %s", strerror(-r));

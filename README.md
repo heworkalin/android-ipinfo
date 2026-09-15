@@ -52,11 +52,17 @@ cat: /sys/class/net/wlan0/mtu: Permission denied
 |---|---|
 | 设备 / 系统 | PJE110 / Android 15 (SDK 35) |
 | 内核 | `Linux 5.15.167-android13-8-o-01144 aarch64` |
-| 运行环境 | Termux（原生）+ `proot-distro` Ubuntu 24.04 |
+| 运行环境 | Termux 原生；`proot-distro` Ubuntu 24.04；**TMOE** `tmoe proot ubuntu noble arm64`（Ubuntu 24.04.5）|
 | 进程身份 | `uid=10616`，`u:r:untrusted_app_27:s0:c104,c258,c512,c768` |
 | 能力 | `CapEff = 0000000000000000`（无 root、无 `CAP_NET_ADMIN`） |
 | 工具链 | `aarch64-linux-android-clang`（NDK r29，bionic 目标） |
 | 对比基准 | `adb shell`（uid=2000，`u:r:shell:s0`，已授权 127.0.0.1:5555） |
+
+两套 proot 方案（proot-distro / TMOE）实测行为一致（同一份 Termux `proot`）：
+`AF_NETLINK` 被换成 `AF_UNIX`、邻居表 0 条、路由缺一部分；TMOE 的 fake root 是 uid=0。
+TMOE 容器里还缺少 `/linkerconfig`，所以跑 bionic 二进制时 Android linker 会往 stderr
+打一行 `failed to find generated linker configuration` 警告——与本程序无关（一个最小
+hello-world 也同样打）。
 
 ## 3. 效果：和"有权限"的基准三方对照
 
@@ -251,8 +257,13 @@ aarch64-linux-android-clang -O2 -Wall -Wextra -Wpedantic -std=c11 -o ipinfo ipin
     都不引用**，没有任何途径能知道它们存在——这部分是真正的硬限制。
 * **MAC 地址拿不到**：Android 对第三方应用隐藏，`SIOCGIFHWADDR` 与 netlink `IFLA_ADDRESS`
   都返回空；这一条 `adb shell` 同样拿不到。
-* **PRoot 下部分字段是仿真的**：`operstate`、`LOWER_UP` 等在 proot 来自 PRoot 的合成回复，
-  不如原生 ioctl 可靠；`mtu`/`txqlen` 已强制改用 ioctl 取真值。
+* **PRoot 下数据是仿真的，而且可能不完整**：`operstate`、`LOWER_UP` 等来自 PRoot 的合成回复；
+  路由表也会缺——实测同一时刻原生 **175 条 IPv4 + 45 条 IPv6**，容器内只有 **156 + 45**
+  （容器自带的 `ip -4 route` 也只有 156，属 PRoot 的能力缺口）。
+  `mtu`/`txqlen` 已强制改用 ioctl 取真值；**要看准确数据请在 Termux 原生环境跑**。
+
+> 诊断手段：`make probe` 会跑两个带对照组的探针（`tools/neigh_probe`、`tools/family_probe`），
+> 分别用来判定“邻居表 0 条”与“`AF_UNSPEC` 请求只回 IPv4”到底是环境问题还是程序问题。
 
 ## 8. 开发方式
 

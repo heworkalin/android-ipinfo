@@ -53,11 +53,17 @@ tool does.
 |---|---|
 | Device / OS | PJE110 / Android 15 (SDK 35) |
 | Kernel | `Linux 5.15.167-android13-8-o-01144 aarch64` |
-| Runtime | Termux (native) + `proot-distro` Ubuntu 24.04 |
+| Runtime | Termux native; `proot-distro` Ubuntu 24.04; **TMOE** `tmoe proot ubuntu noble arm64` (Ubuntu 24.04.5) |
 | Process identity | `uid=10616`, `u:r:untrusted_app_27:s0:c104,c258,c512,c768` |
 | Capabilities | `CapEff = 0000000000000000` (no root, no `CAP_NET_ADMIN`) |
 | Toolchain | `aarch64-linux-android-clang` (NDK r29, bionic target) |
 | Reference oracle | `adb shell` (uid=2000, `u:r:shell:s0`, authorized on 127.0.0.1:5555) |
+
+Both proot flavors (proot-distro / TMOE) behave identically here (same Termux `proot`):
+`AF_NETLINK` is replaced by `AF_UNIX`, the neighbor table is empty and part of the routing table is
+missing; TMOE's fake root is uid=0. TMOE's container also lacks `/linkerconfig`, so running a bionic
+binary makes the Android linker print `failed to find generated linker configuration` on stderr —
+unrelated to this program (a minimal hello-world prints it too).
 
 ## 3. Results: three-way comparison against a privileged baseline
 
@@ -265,9 +271,15 @@ clean under ASan/UBSan.
     no route and no neighbor entry**, so there is no way to learn they exist — a genuine hard limit.
 * **No MAC address**: Android hides it from third-party apps; `SIOCGIFHWADDR` and netlink
   `IFLA_ADDRESS` both come back empty. `adb shell` cannot get it either.
-* **Some fields are emulated under PRoot**: `operstate`, `LOWER_UP` and friends come from PRoot's
-  synthesized replies there, which is less trustworthy than native ioctl; `mtu`/`txqlen` have
-  been forced over to ioctl to get the real values.
+* **Under PRoot the data is emulated and may be incomplete**: `operstate`, `LOWER_UP` and friends
+  come from PRoot's synthesized replies, and the routing table can be missing entries — measured at
+  the same moment: native **175 IPv4 + 45 IPv6** routes versus **156 + 45** inside the container
+  (the container's own `ip -4 route` also reports 156, so this is a PRoot capability gap).
+  `mtu`/`txqlen` have been forced over to ioctl for real values; **run on native Termux for exact data**.
+
+> Diagnostics: `make probe` runs two controlled probes (`tools/neigh_probe`, `tools/family_probe`)
+> that tell apart "environment limitation" from "program bug" for the empty neighbor table and for
+> the `AF_UNSPEC` request returning IPv4 only.
 
 ## 8. How it was developed
 

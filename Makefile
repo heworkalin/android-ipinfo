@@ -34,11 +34,18 @@ compare: ipinfo
 test-proot: ipinfo
 	bash test_proot.sh
 
-# 邻居表能力探针（带 RTM_GETADDR 对照组，用来说清“0 条”到底是环境还是探针的问题）
-probe: tools/neigh_probe
+# 能力探针（用来说清“能力缺失”到底是环境问题还是程序问题）
+#   neigh_probe  : 带 RTM_GETADDR 对照组，验证邻居表
+#   family_probe : 对 ADDR/ROUTE/NEIGH 各用 AF_UNSPEC/AF_INET/AF_INET6 发一次，
+#                  暴露“AF_UNSPEC 在 PRoot 下只回 IPv4”这类问题
+probe: tools/neigh_probe tools/family_probe
 	./tools/neigh_probe
+	./tools/family_probe
 
 tools/neigh_probe: tools/neigh_probe.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+tools/family_probe: tools/family_probe.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 install: ipinfo
@@ -46,7 +53,7 @@ install: ipinfo
 	install -m 755 ipinfo $(DESTDIR)$(BINDIR)/ipinfo
 
 clean:
-	rm -f ipinfo *.o tools/neigh_probe
+	rm -f ipinfo *.o tools/neigh_probe tools/family_probe
 	rm -rf build
 
 .PHONY: all check compare test-proot probe install clean

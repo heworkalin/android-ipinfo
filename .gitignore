@@ -20,3 +20,4 @@ ni
 arp_probe*
 ift*
 /tools/neigh_probe
+/tools/family_probe

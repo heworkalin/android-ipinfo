@@ -510,6 +510,79 @@ real=$(awk '/^Uid:/{print $2}' /proc/self/status) # 10616（真）
 另外，基准值全部**运行时现取**：设备网络状态是会变的（本项目开发过程中就从
 10 接口/14+52 路由变成了 9 接口/12+41），写死数字必然假失败。
 
+### 3.8 PRoot 对 `AF_UNSPEC` 的 ROUTE 请求只回 IPv4（真 bug，已修）
+
+这是在 **TMOE** 环境里对出来的：同一个容器里，glibc 的 `ip -6 route show table all`
+能拿到 **45** 条 IPv6 路由，而 ipinfo 在 proot 下却报 **0** 条。
+
+用 [`tools/family_probe.c`](tools/family_probe.c)（对 ADDR/ROUTE/NEIGH 各用
+`AF_UNSPEC`/`AF_INET`/`AF_INET6` 发一次）定住了原因：
+
+| 请求 | Termux 原生 | proot-distro | TMOE |
+|---|---|---|---|
+| `ROUTE` + `AF_UNSPEC` | **220**（2:175 + 10:45）| **156（只有 IPv4）** | **156（只有 IPv4）** |
+| `ROUTE` + `AF_INET6` | 45 | **45** | **45** |
+| `ADDR` + `AF_UNSPEC` | 16（两族） | 16（两族，正常）| 16（正常）|
+| `NEIGH`（三种 family） | 40 / 4 / 36 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+即：内核按 `AF_UNSPEC` 返回两族，而 **PRoot 的合成 netlink 只看 IPv4**，
+显式指定 `AF_INET6` 才行；`ADDR` 恰好没这个问题（所以早期没暴露）。
+
+**修法**：`ADDR` 与 `ROUTE` 都改成按 family 各发一次，不再依赖 `AF_UNSPEC`：
+
+```c
+if ((r = nl_dump(RTM_GETADDR,  AF_INET,  (int)sizeof(struct rtgenmsg), cb_addr,  NULL)) < 0) ...
+if ((r = nl_dump(RTM_GETADDR,  AF_INET6, (int)sizeof(struct rtgenmsg), cb_addr,  NULL)) < 0) ...
+if ((r = nl_dump(RTM_GETROUTE, AF_INET,  (int)sizeof(struct rtgenmsg), cb_route, NULL)) < 0) ...
+if ((r = nl_dump(RTM_GETROUTE, AF_INET6, (int)sizeof(struct rtgenmsg), cb_route, NULL)) < 0) ...
+```
+
+修复后容器内 `-l` 为 **156 + 45**（IPv6 回来了；156 vs 原生的 175 是 PRoot 自身少报，
+容器自带的 `ip -4 route` 也只有 156）。
+
+> 教训：**不要把“两边一致”当成永久结论**。早期网络状态简单，proot 与原生恰好一致；
+> 换成 VPN 开启、路由变多后差异才暴露。与 `adb` 做集合级对照（`make compare`）能在原生侧
+> 拓死正确性，而容器侧的完整性只能靠 `family_probe` 这类探针。
+
+### 3.9 TMOE 环境（另一套 proot 方案）
+
+TMOE 用 `tmoe proot ubuntu noble arm64 <脚本路径>` 进入，注意：
+
+* **每个参数被当成一行命令**，所以不能写 `tmoe ... sh -c '...'`；
+  要么传一个**单个脚本路径**（先把命令写成脚本），要么单条无参命令。
+* 容器内是 **fake root（uid=0）**，真 uid 依旧是 10616。
+* rootfs 在 `~/.local/share/tmoe-linux/containers/proot/ubuntu-noble_arm64/`。
+* 行为与 proot-distro **一致**（同一份 Termux `proot`）：AF_UNIX 伪装、邻居表 0 条、
+  路由少报；`family_probe` 两边输出逐行相同。
+* 额外差异：TMOE 容器里**没有 `/linkerconfig`**，所以跑 bionic 二进制时 Android linker 会往 stderr 打：
+
+  ```
+  WARNING: linker: Warning: failed to find generated linker configuration from "/linkerconfig/ld.config.txt"
+  ```
+
+  这是**平台的 linker** 打的，不是程序输出：一个跟 ipinfo 无关的最小 bionic 程序同样会打。
+  （proot-distro 会 bind `/linkerconfig`，所以那边没这个警告。）
+
+### 3.10 跨环境指纹对比
+
+[`tools/fingerprint.sh`](tools/fingerprint.sh) 打印当前环境的能力指纹，便于三方对比：
+
+```console
+$ bash tools/fingerprint.sh .                                 # 原生
+$ proot-distro login ubuntu --user he -- bash /tmp/fp/run.sh  # proot-distro
+$ tmoe proot ubuntu noble arm64 /tmp/fp/run.sh                # TMOE
+```
+
+实测（同一时刻，VPN 开启）：
+
+| | 原生 | proot-distro | TMOE |
+|---|---|---|---|
+| `uname -r` | 5.15.167-android13-8-o | `6.17.0-PRoot-Distro`（proot-distro 伪造的）| 5.15.167-android13-8-o（真）|
+| getuid / 真 uid | 10616 / 10616 | 10617 / 10616 | 0 / 10616 |
+| `SO_DOMAIN`(ADDR/NEIGH) | 16 / 16 | 1 / 1 | 1 / 1 |
+| ADDR 对照组条目 | 16 | 16 | 16 |
+| NEIGH 条目 | 40 / 4 / 36 | 0 / 0 / 0 | 0 / 0 / 0 |
+
 ---
 
 ## 4. 代码层面的坑
@@ -564,6 +637,10 @@ python3 cmp_neigh.py      # 默认视图 10 == 10（随环境变化）
 # 7) 进 proot 容器重测（自动识别模式：宿主机做对比，容器内只查不变量）
 #    宿主机：make test-proot    容器内：bash test_proot.sh
 make test-proot
+
+# 7.5) 能力探针（带对照组，用于区分“环境不支持”与“程序 bug”）
+make probe
+#      family_probe 会在容器里暴露“AF_UNSPEC 只回 IPv4”这类问题
 
 # 8) socket 真身（防 AF_NETLINK 被换）
 ./ipinfo -v               # 出现 "actually domain 1" 就说明是 PRoot 仿真
