@@ -129,6 +129,10 @@ static int  rts_n = 0;
 static struct neigh neighs[MAXNEIGH];
 static int  neighs_n = 0;
 
+/* netlink socket 是否被换成别的协议（本机 PRoot 会把 AF_NETLINK 换成 AF_UNIX，
+ * 此时“netlink 成功”是仿真回复，且没有邻居表）。供 -v 与邻居表空提示使用。*/
+static int  nl_emulated = 0;
+
 struct opts {
     const char *filter;
     int only_up, all, w4, w6, wmac, routes, all_routes, neigh, neigh_all,
@@ -200,15 +204,18 @@ static int nl_dump(int type, int family, int payload_len, nl_cb cb, void *ctx)
     /* PRoot（本机这个带补丁的构建）在宿主拒绝 AF_NETLINK 时会静默把 socket
      * 换成 AF_UNIX（日志："AF_NETLINK ... denied by host; enabling AF_UNIX
      * fallback for sandbox helpers"），此时“netlink 成功”其实是 PRoot 合成
-     * 的回复（实测会缺 IFA_FLAGS/IFA_CACHEINFO/IFA_BROADCAST）。
-     * -v 时把这一真相报出来，避免把仿真数据当成内核数据。*/
-    if (opt.verbose) {
+     * 的回复（实测会缺 IFA_FLAGS/IFA_CACHEINFO/IFA_BROADCAST，且没有邻居表）。
+     * 不论是否 -v 都记下这个事实（nl_emulated），好在输出里如实告知用户。*/
+    {
         int dom = -1;
         socklen_t dl = sizeof(dom);
         if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &dom, &dl) == 0 &&
-            dom != AF_NETLINK)
-            vlog("socket(AF_NETLINK) is actually domain %d "
-                 "(PRoot AF_UNIX fallback?) - netlink replies may be emulated", dom);
+            dom != AF_NETLINK) {
+            nl_emulated = 1;
+            if (opt.verbose)
+                vlog("socket(AF_NETLINK) is actually domain %d "
+                     "(PRoot AF_UNIX fallback?) - netlink replies may be emulated", dom);
+        }
     }
 
     int rcvbuf = 1 << 20;   /* 大路由表时降低被截断的概率 */
@@ -896,7 +903,22 @@ static void print_neighs(void)
 {
     int any = 0;
     for (int i = 0; i < neighs_n; i++) if (neigh_selected(&neighs[i])) any = 1;
-    if (!any) return;
+
+    if (!opt.neigh) return;
+
+    /* 明确要了邻居表却没数据时，必须说清楚：
+     * “空输出”与“请求不支持/工具坏了”不能长得一模一样。*/
+    if (!any) {
+        printf("neighbors (%s): (none)\n",
+               opt.neigh_all ? "nud all" : "NOARP/multicast hidden, use -N for all");
+        if (nl_emulated)
+            printf("  note: RTM_GETNEIGH returned 0 entries and netlink here is emulated\n"
+                   "        (PRoot replaced AF_NETLINK with AF_UNIX, whose fallback does\n"
+                   "        not implement the neighbor table). Run ipinfo outside proot\n"
+                   "        (Termux host) to get ARP/NDP entries.\n");
+        printf("\n");
+        return;
+    }
 
     printf("neighbors (%s):\n",
            opt.neigh_all ? "nud all" : "NOARP/multicast hidden, use -N for all");

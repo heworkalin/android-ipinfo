@@ -242,6 +242,48 @@ $ grep -rl "Cannot bind netlink socket" /system/lib64/
 
 ---
 
+### 1.12 “空输出”是最坏的输出（邻居表在容器内静默无输出）
+
+用户在容器里跑 `./ipinfo -N`（nud all，想看 ARP），结果**邻居表什么都不打印**，
+一度以为工具坏了。实际上这是 PRoot 的能力缺口（返回 0 条）——但**工具没告诉他是这个原因**。
+
+“空输出”与“请求不支持 / 工具坏了”长得一模一样，这是可用性问题，不是能力问题。
+修法：当用户明确要了邻居表（`-n/-N`）却一条都没有时，显式输出：
+
+```
+neighbors (nud all): (none)
+  note: RTM_GETNEIGH returned 0 entries and netlink here is emulated
+        (PRoot replaced AF_NETLINK with AF_UNIX, whose fallback does
+        not implement the neighbor table). Run ipinfo outside proot
+        (Termux host) to get ARP/NDP entries.
+```
+
+为此把 `SO_DOMAIN` 检测从“仅 -v 时做”改成**总是做**，并把结果记到全局 `nl_emulated`：
+
+```c
+if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &dom, &dl) == 0 && dom != AF_NETLINK) {
+    nl_emulated = 1;
+    if (opt.verbose) vlog("... actually domain %d (PRoot AF_UNIX fallback?)", dom);
+}
+```
+
+这个提示也写进了自测断言：`test_proot.sh` 会检查容器内 `-n` 是否打印了 `(none)`
+并说明了“netlink here is emulated”，防止以后又被静默掉。
+
+### 1.13 tmux / 交互式 login 不会改变行为
+
+曾怀疑“在 tmux 里交互式 `proot-distro login` 与 `-- command` 模式不同”。实测（tmux 3.7c）：
+
+```console
+$ tmux new-session -d -s t1; tmux send-keys -t t1 'proot-distro login ubuntu --user he' Enter
+$ tmux send-keys -t t1 'cd /data/data/com.termux/files/home/android_ip && ./ipinfo -v -N -i wlan0' Enter
+ipinfo: socket(AF_NETLINK) is actually domain 1 (PRoot AF_UNIX fallback?) ...   # 4 次
+```
+
+结论：两种方式行为完全一致，仍然是 AF_UNIX 伪装、邻居表为空。
+注意 `-N` 下提示是 **4 次**而不是 3 次——因为多了一次 `RTM_GETNEIGH` dump（LINK/ADDR/ROUTE/NEIGH）。
+`test_proot.sh` 里断言的是不带 `-n` 的 3 次。
+
 ## 2. Android 权限的坑
 
 ### 2.1 `RTM_GETLINK` 被拒，但 `RTM_GETADDR` / `RTM_GETROUTE` 可用

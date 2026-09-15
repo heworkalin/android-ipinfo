@@ -122,6 +122,18 @@ echo "-- PRoot 能力缺口：邻居表必须为 0 --"
 chk "邻居默认(-n)"  0 "$($b -n | cnt '^  IPv[46] dev ')"
 chk "邻居全集(-N)"  0 "$($b -N | cnt '^  IPv[46] dev ')"
 
+echo "-- 邻居表为空时必须显式说明，而不是静默 --"
+if $b -n -R | grep -q 'neighbors (.*): (none)'; then
+    echo "  OK   打印了 (none)"
+else
+    echo "  FAIL 空输出没任何说明（用户无法区分“表为空”和“工具坏了”）"; fail=1
+fi
+if $b -n -R | grep -q 'netlink here is emulated'; then
+    echo "  OK   说明了是 PRoot 仿真 netlink 不支持"
+else
+    echo "  FAIL 未说明原因"; fail=1
+fi
+
 echo "-- -v 必须提示 AF_NETLINK 被换成 AF_UNIX（3 次 dump）--"
 n=$($b -v -s -i wlan0 2>&1 >/dev/null | grep -c 'actually domain 1')
 chk "AF_UNIX 提示次数" 3 "$n"

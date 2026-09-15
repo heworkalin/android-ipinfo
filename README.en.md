@@ -125,8 +125,19 @@ Against the baseline (`make compare`):
 | default view (NOARP/multicast hidden) | 10 | 10 | **identical** |
 | `nud all` | 49 | 49 | same count; on 26 NOARP entries `shell` can additionally see a 1-byte bogus lladdr `08` that an unprivileged app cannot (see PITFALLS) |
 
-`RTM_GETNEIGH` works in native Termux; **under proot PRoot does not support this request (returns 0 entries)**, so this section is empty inside the container.
-`-a` also issues this request once, to discover interfaces that carry no address (see [§7 Known limitations](#7-known-limitations)).
+`RTM_GETNEIGH` works in native Termux; **under proot PRoot does not support this request
+(returns 0 entries)**. Rather than printing nothing, it says so explicitly:
+
+```console
+neighbors (nud all): (none)
+  note: RTM_GETNEIGH returned 0 entries and netlink here is emulated
+        (PRoot replaced AF_NETLINK with AF_UNIX, whose fallback does
+        not implement the neighbor table). Run ipinfo outside proot
+        (Termux host) to get ARP/NDP entries.
+```
+
+`-a` also issues this request once, to discover interfaces that carry no address
+(see [§7 Known limitations](#7-known-limitations)).
 
 ### Other interfaces and script-friendly output
 

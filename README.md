@@ -122,7 +122,17 @@ neighbors (NOARP/multicast hidden, use -N for all):
 | 默认视图（隐藏 NOARP/组播）| 10 | 10 | **完全相同** |
 | `nud all` 全集 | 49 | 49 | 条数一致；26 条 NOARP 条目上 shell 能多看到 1 字节伪 lladdr `08`，非特权应用看不到（见 PITFALLS）|
 
-`RTM_GETNEIGH` 在 Termux 原生可用；**proot 下 PRoot 不支持这个请求（返回 0 条）**，所以该节在容器里为空。
+`RTM_GETNEIGH` 在 Termux 原生可用；**proot 下 PRoot 不支持这个请求（返回 0 条）**。
+这种情况不会静默空着，而是明确告知：
+
+```console
+neighbors (nud all): (none)
+  note: RTM_GETNEIGH returned 0 entries and netlink here is emulated
+        (PRoot replaced AF_NETLINK with AF_UNIX, whose fallback does
+        not implement the neighbor table). Run ipinfo outside proot
+        (Termux host) to get ARP/NDP entries.
+```
+
 `-a` 也会顺便发一次这个请求，用来发现那些没有地址的接口（见 [§7 已知限制](#7-已知限制)）。
 
 ### 其余接口与脚本化输出
